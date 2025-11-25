@@ -65,12 +65,6 @@ def format_file_size(size_bytes):
 
 @dp.message_handler(commands="kitoblar")
 async def books_panel(message: types.Message):
-    """Kitoblar bo'limiga kirish"""
-    telegram_id = message.from_user.id
-
-    if not await check_admin_permission(telegram_id):
-        await message.reply("❌ Sizda bu bo'limga kirish huquqi yo'q!")
-        return
 
     await message.answer(
         "📚 <b>Kitoblar boshqaruvi</b>\n\n"
