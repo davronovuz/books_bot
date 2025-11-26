@@ -74,7 +74,7 @@ def skip_button():
 # =================== INLINE KEYBOARDS ===================
 
 def categories_inline_keyboard(categories, action_prefix="select_cat", row_width=2):
-    """Kategoriyalar inline keyboard"""
+    """Kategoriyalar inline keyboard (asosiy va subkategoriyalar uchun)"""
     keyboard = InlineKeyboardMarkup(row_width=row_width)
 
     if not categories:
@@ -82,10 +82,20 @@ def categories_inline_keyboard(categories, action_prefix="select_cat", row_width
         return keyboard
 
     for cat in categories:
-        # cat[0] = id, cat[1] = name
+        # cat[0] = id, cat[1] = name, cat[3] = parent_id
+        # Asosiy kategoriya uchun 📁, subkategoriya uchun 📂
+        try:
+            if cat[3] is None:  # parent_id is None
+                emoji = "📁"
+            else:
+                emoji = "📂"
+        except:
+            # Agar parent_id ustuni yo'q bo'lsa (eski database)
+            emoji = "📁"
+
         keyboard.insert(
             InlineKeyboardButton(
-                text=f"📁 {cat[1]}",
+                text=f"{emoji} {cat[1]}",
                 callback_data=f"{action_prefix}:{cat[0]}"
             )
         )
@@ -95,8 +105,8 @@ def categories_inline_keyboard(categories, action_prefix="select_cat", row_width
     return keyboard
 
 
-def books_inline_keyboard(books, action_prefix="get_book", show_delete=False):
-    """Kitoblar inline keyboard"""
+def books_inline_keyboard(books, action_prefix="get_book", show_delete=False, back_callback="back_to_main_cats"):
+    """Kitoblar inline keyboard (PDF va Audio uchun turli emoji)"""
     keyboard = InlineKeyboardMarkup(row_width=1)
 
     if not books:
@@ -104,13 +114,20 @@ def books_inline_keyboard(books, action_prefix="get_book", show_delete=False):
         return keyboard
 
     for book in books:
-        # book[0] = id, book[1] = title
-        book_title = book[1][:45] + "..." if len(book[1]) > 45 else book[1]
+        # book[0] = id, book[1] = title, book[3] = file_type
+        book_title = book[1][:40] + "..." if len(book[1]) > 40 else book[1]
+
+        # PDF yoki Audio emoji
+        try:
+            emoji = "📕" if book[3] == 'pdf' else "🎧"
+        except:
+            # Agar file_type ustuni yo'q bo'lsa (eski database)
+            emoji = "📖"
 
         if show_delete:
             keyboard.row(
                 InlineKeyboardButton(
-                    text=f"📖 {book_title}",
+                    text=f"{emoji} {book_title}",
                     callback_data=f"book_info:{book[0]}"
                 ),
                 InlineKeyboardButton(
@@ -121,12 +138,12 @@ def books_inline_keyboard(books, action_prefix="get_book", show_delete=False):
         else:
             keyboard.add(
                 InlineKeyboardButton(
-                    text=f"📖 {book_title}",
+                    text=f"{emoji} {book_title}",
                     callback_data=f"{action_prefix}:{book[0]}"
                 )
             )
 
-    keyboard.add(InlineKeyboardButton("🔙 Orqaga", callback_data="back_to_categories"))
+    keyboard.add(InlineKeyboardButton("🔙 Orqaga", callback_data=back_callback))
 
     return keyboard
 
@@ -141,14 +158,21 @@ def confirm_keyboard(action_id):
     return keyboard
 
 
-def book_detail_keyboard(book_id):
-    """Kitob tafsilotlari keyboard"""
+def book_detail_keyboard(book_id, file_type='pdf'):
+    """Kitob tafsilotlari keyboard (PDF yoki Audio)"""
     keyboard = InlineKeyboardMarkup()
+
+    # PDF uchun "Yuklab olish", Audio uchun "Tinglash"
+    if file_type == 'pdf':
+        button_text = "📥 Yuklab olish"
+    else:
+        button_text = "🎵 Tinglash"
+
     keyboard.add(
-        InlineKeyboardButton("📥 Yuklab olish", callback_data=f"download_book:{book_id}")
+        InlineKeyboardButton(button_text, callback_data=f"download_book:{book_id}")
     )
     keyboard.add(
-        InlineKeyboardButton("🔙 Orqaga", callback_data="back_to_books")
+        InlineKeyboardButton("🔙 Orqaga", callback_data="back_to_main_cats")
     )
     return keyboard
 
