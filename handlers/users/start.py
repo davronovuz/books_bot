@@ -24,7 +24,7 @@ from datetime import datetime
 from loader import dp, bot, book_db, user_db
 
 # Database imports
-from database.book_database import (
+from utils.db_api.book_database import (
     Book, Category, PaginatedResult,
     FileType, Statistics
 )

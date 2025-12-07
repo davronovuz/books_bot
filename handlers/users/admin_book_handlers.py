@@ -24,7 +24,7 @@ from loader import dp, user_db, book_db, bot
 from data.config import ADMINS
 
 # Database imports
-from database.book_database import (
+from utils.db_api.book_database import (
     Book, Category, PaginatedResult,
     FileType, Statistics
 )
