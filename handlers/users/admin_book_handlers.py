@@ -103,10 +103,14 @@ SEARCH_RESULTS_LIMIT = 20
 
 async def is_admin(user_id: int) -> bool:
     """Admin tekshirish"""
+    # Config dagi ADMINS ro'yxatidan tekshirish
     if user_id in ADMINS:
         return True
+
+    # Database dan tekshirish
     user = user_db.select_user(telegram_id=user_id)
     if user:
+        # user[0] = id (database id)
         return user_db.check_if_admin(user_id=user[0])
     return False
 

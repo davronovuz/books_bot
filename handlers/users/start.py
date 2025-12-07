@@ -228,7 +228,6 @@ async def cmd_start(message: types.Message, state: FSMContext):
         try:
             user_db.add_user(
                 telegram_id=message.from_user.id,
-                full_name=message.from_user.full_name,
                 username=message.from_user.username
             )
             logger.info(f"New user registered: {message.from_user.id}")
