@@ -302,7 +302,7 @@ async def go_home(message: types.Message, state: FSMContext):
 
 # =================== KATEGORIYALAR BO'LIMI ===================
 
-@dp.message_handler(Text(equals=f"{AdminEmoji.FOLDER} Kategoriyalar"))
+@dp.message_handler(Text(equals="🗂 Kategoriyalar boshqaruvi"))
 async def categories_section(message: types.Message):
     """Kategoriyalar bo'limi"""
     if not await is_admin(message.from_user.id):
@@ -444,7 +444,7 @@ async def list_categories(message: types.Message):
 
 # =================== KITOBLAR BO'LIMI ===================
 
-@dp.message_handler(Text(equals=f"{AdminEmoji.BOOK} Kitoblar"))
+@dp.message_handler(Text(equals="📚 Kitoblar boshqaruvi"))
 async def books_section(message: types.Message):
     """Kitoblar bo'limi"""
     if not await is_admin(message.from_user.id):

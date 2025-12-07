@@ -21,7 +21,7 @@ from typing import List, Optional, Union
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from book_database import Book, Category, PaginatedResult, FileType
+    from utils.db_api.book_database import Book, Category, PaginatedResult, FileType
 
 
 # =================== CONSTANTS ===================
@@ -126,8 +126,8 @@ def admin_main_menu() -> ReplyKeyboardMarkup:
     """Admin asosiy menyu"""
     keyboard = ReplyKeyboardMarkup(resize_keyboard=True, row_width=2)
     keyboard.add(
-        KeyboardButton(f"{AdminEmoji.FOLDER} Kategoriyalar"),
-        KeyboardButton(f"{AdminEmoji.BOOK} Kitoblar")
+        KeyboardButton(f"🗂 Kategoriyalar boshqaruvi"),
+        KeyboardButton(f"📚 Kitoblar boshqaruvi")
     )
     keyboard.add(
         KeyboardButton(f"{AdminEmoji.STATS} Statistika"),

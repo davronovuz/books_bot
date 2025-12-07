@@ -21,7 +21,7 @@ from enum import Enum
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from book_database import Book, Category, PaginatedResult, FileType
+    from utils.db_api.book_database import Book, Category, PaginatedResult, FileType
 
 
 # =================== CONSTANTS ===================
