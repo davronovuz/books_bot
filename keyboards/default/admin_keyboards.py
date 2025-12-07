@@ -9,6 +9,7 @@ Xususiyatlar:
 - Empty state handling
 - DRY principle
 - Soft delete support
+- sekin sekin
 """
 
 from aiogram.types import (
