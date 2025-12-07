@@ -1,12 +1,13 @@
 from .database import Database
 from datetime import datetime
+import logging
 
 
 class BookDatabase(Database):
     def create_tables(self):
         """Kategoriyalar va kitoblar jadvallarini yaratish"""
 
-        # Kategoriyalar jadvali (Subkategoriya qo'llab-quvvatlaydi)
+        # Kategoriyalar jadvali
         sql_categories = """
         CREATE TABLE IF NOT EXISTS Categories (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -21,7 +22,7 @@ class BookDatabase(Database):
         """
         self.execute(sql_categories, commit=True)
 
-        # Kitoblar jadvali (PDF va Audio ikkalasi ham)
+        # Kitoblar jadvali
         sql_books = """
         CREATE TABLE IF NOT EXISTS Books (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -43,10 +44,36 @@ class BookDatabase(Database):
         """
         self.execute(sql_books, commit=True)
 
+    # =================== BULK INSERT ===================
+
+    def add_books_bulk(self, books_list: list):
+        """Ko'p kitobni bir vaqtda qo'shish (loop bilan)
+
+        books_list formati:
+        [
+            (title, file_id, file_type, category_id, author, narrator, description, duration, file_size, uploaded_by),
+            ...
+        ]
+        """
+        added = 0
+        for book in books_list:
+            try:
+                sql = """
+                INSERT INTO Books (title, file_id, file_type, category_id, author, narrator, 
+                                  description, duration, file_size, uploaded_by)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """
+                self.execute(sql, parameters=book, commit=True)
+                added += 1
+            except Exception as e:
+                logging.error(f"Error adding book {book[0]}: {e}")
+                continue
+        return added
+
     # =================== KATEGORIYALAR ===================
 
     def add_category(self, name: str, created_by: int, description: str = None, parent_id: int = None):
-        """Yangi kategoriya yoki subkategoriya qo'shish"""
+        """Yangi kategoriya qo'shish"""
         sql = """
         INSERT INTO Categories (name, description, parent_id, created_by)
         VALUES (?, ?, ?, ?)
@@ -59,64 +86,60 @@ class BookDatabase(Database):
         return self.execute(sql, fetchall=True)
 
     def get_main_categories(self):
-        """Faqat asosiy kategoriyalarni olish (parent_id = NULL)"""
+        """Faqat asosiy kategoriyalarni olish"""
         sql = "SELECT * FROM Categories WHERE parent_id IS NULL ORDER BY name"
         return self.execute(sql, fetchall=True)
 
     def get_subcategories(self, parent_id: int):
-        """Berilgan kategoriyaning subkategoriyalarini olish"""
+        """Subkategoriyalarni olish"""
         sql = "SELECT * FROM Categories WHERE parent_id = ? ORDER BY name"
         return self.execute(sql, parameters=(parent_id,), fetchall=True)
 
     def has_subcategories(self, category_id: int):
-        """Kategoriyaning subkategoriyalari bormi?"""
+        """Subkategoriyalar bormi?"""
         sql = "SELECT COUNT(*) FROM Categories WHERE parent_id = ?"
-        count = self.execute(sql, parameters=(category_id,), fetchone=True)[0]
-        return count > 0
+        result = self.execute(sql, parameters=(category_id,), fetchone=True)
+        return result[0] > 0 if result else False
 
     def get_category_by_id(self, category_id: int):
-        """ID bo'yicha kategoriyani olish"""
+        """ID bo'yicha kategoriya"""
         sql = "SELECT * FROM Categories WHERE id = ?"
         return self.execute(sql, parameters=(category_id,), fetchone=True)
 
     def get_category_by_name(self, name: str, parent_id: int = None):
-        """Nom bo'yicha kategoriyani olish"""
+        """Nom bo'yicha kategoriya"""
         if parent_id is not None:
             sql = "SELECT * FROM Categories WHERE name = ? AND parent_id = ?"
             return self.execute(sql, parameters=(name, parent_id), fetchone=True)
         else:
-            sql = "SELECT * FROM Categories WHERE name = ?"
+            sql = "SELECT * FROM Categories WHERE name = ? AND parent_id IS NULL"
             return self.execute(sql, parameters=(name,), fetchone=True)
 
     def delete_category(self, category_id: int):
-        """Kategoriyani o'chirish (barcha subkategoriyalar ham o'chiriladi)"""
+        """Kategoriyani o'chirish"""
         sql = "DELETE FROM Categories WHERE id = ?"
         self.execute(sql, parameters=(category_id,), commit=True)
 
-    def update_category(self, category_id: int, name: str = None, description: str = None):
-        """Kategoriyani yangilash"""
-        if name:
-            sql = "UPDATE Categories SET name = ? WHERE id = ?"
-            self.execute(sql, parameters=(name, category_id), commit=True)
-        if description:
-            sql = "UPDATE Categories SET description = ? WHERE id = ?"
-            self.execute(sql, parameters=(description, category_id), commit=True)
+    def update_category_name(self, category_id: int, new_name: str):
+        """Kategoriya nomini yangilash"""
+        sql = "UPDATE Categories SET name = ? WHERE id = ?"
+        self.execute(sql, parameters=(new_name, category_id), commit=True)
+
+    def update_category_description(self, category_id: int, new_description: str):
+        """Kategoriya tavsifini yangilash"""
+        sql = "UPDATE Categories SET description = ? WHERE id = ?"
+        self.execute(sql, parameters=(new_description, category_id), commit=True)
 
     def count_categories(self):
-        """Kategoriyalar sonini hisoblash"""
+        """Kategoriyalar soni"""
         sql = "SELECT COUNT(*) FROM Categories"
-        return self.execute(sql, fetchone=True)[0]
-
-    def is_main_category(self, category_id: int):
-        """Asosiy kategoriya ekanligini tekshirish"""
-        category = self.get_category_by_id(category_id)
-        return category and category[3] is None  # parent_id is NULL
+        result = self.execute(sql, fetchone=True)
+        return result[0] if result else 0
 
     def get_category_path(self, category_id: int):
-        """Kategoriya yo'lini olish (Asosiy → Sub → Sub-sub)"""
+        """Kategoriya yo'li (Asosiy → Sub)"""
         path = []
         current_id = category_id
-
         while current_id:
             category = self.get_category_by_id(current_id)
             if category:
@@ -124,7 +147,6 @@ class BookDatabase(Database):
                 current_id = category[3]  # parent_id
             else:
                 break
-
         return " → ".join(path) if path else ""
 
     # =================== KITOBLAR ===================
@@ -132,7 +154,7 @@ class BookDatabase(Database):
     def add_book(self, title: str, file_id: str, category_id: int, uploaded_by: int,
                  file_type: str = 'pdf', author: str = None, narrator: str = None,
                  description: str = None, duration: int = None, file_size: int = None):
-        """Yangi kitob qo'shish (PDF yoki Audio)"""
+        """Bitta kitob qo'shish"""
         sql = """
         INSERT INTO Books (title, file_id, file_type, category_id, author, narrator, 
                           description, duration, file_size, uploaded_by)
@@ -143,7 +165,7 @@ class BookDatabase(Database):
                      commit=True)
 
     def get_all_books(self, file_type: str = None):
-        """Barcha kitoblarni olish (ixtiyoriy: faqat PDF yoki Audio)"""
+        """Barcha kitoblar"""
         if file_type:
             sql = """
             SELECT Books.*, Categories.name as category_name 
@@ -163,24 +185,16 @@ class BookDatabase(Database):
             return self.execute(sql, fetchall=True)
 
     def get_books_by_category(self, category_id: int, file_type: str = None):
-        """Kategoriya bo'yicha kitoblarni olish"""
+        """Kategoriya bo'yicha kitoblar"""
         if file_type:
-            sql = """
-            SELECT * FROM Books 
-            WHERE category_id = ? AND file_type = ?
-            ORDER BY title
-            """
+            sql = "SELECT * FROM Books WHERE category_id = ? AND file_type = ? ORDER BY title"
             return self.execute(sql, parameters=(category_id, file_type), fetchall=True)
         else:
-            sql = """
-            SELECT * FROM Books 
-            WHERE category_id = ?
-            ORDER BY title
-            """
+            sql = "SELECT * FROM Books WHERE category_id = ? ORDER BY title"
             return self.execute(sql, parameters=(category_id,), fetchall=True)
 
     def get_book_by_id(self, book_id: int):
-        """ID bo'yicha kitobni olish"""
+        """ID bo'yicha kitob"""
         sql = """
         SELECT Books.*, Categories.name as category_name 
         FROM Books 
@@ -189,10 +203,14 @@ class BookDatabase(Database):
         """
         return self.execute(sql, parameters=(book_id,), fetchone=True)
 
-    def search_books(self, query: str, file_type: str = None):
-        """Kitob qidirish (nom, muallif va hikoyachi bo'yicha)"""
-        search_query = f"%{query}%"
+    def get_book_by_file_id(self, file_id: str):
+        """File ID bo'yicha kitob (dublikat tekshirish uchun)"""
+        sql = "SELECT * FROM Books WHERE file_id = ?"
+        return self.execute(sql, parameters=(file_id,), fetchone=True)
 
+    def search_books(self, query: str, file_type: str = None):
+        """Kitob qidirish"""
+        search_query = f"%{query}%"
         if file_type:
             sql = """
             SELECT Books.*, Categories.name as category_name 
@@ -202,8 +220,7 @@ class BookDatabase(Database):
               AND Books.file_type = ?
             ORDER BY Books.title
             """
-            return self.execute(sql, parameters=(search_query, search_query, search_query, file_type),
-                                fetchall=True)
+            return self.execute(sql, parameters=(search_query, search_query, search_query, file_type), fetchall=True)
         else:
             sql = """
             SELECT Books.*, Categories.name as category_name 
@@ -212,13 +229,23 @@ class BookDatabase(Database):
             WHERE Books.title LIKE ? OR Books.author LIKE ? OR Books.narrator LIKE ?
             ORDER BY Books.title
             """
-            return self.execute(sql, parameters=(search_query, search_query, search_query),
-                                fetchall=True)
+            return self.execute(sql, parameters=(search_query, search_query, search_query), fetchall=True)
 
     def delete_book(self, book_id: int):
         """Kitobni o'chirish"""
         sql = "DELETE FROM Books WHERE id = ?"
         self.execute(sql, parameters=(book_id,), commit=True)
+
+    def delete_books_bulk(self, book_ids: list):
+        """Ko'p kitobni o'chirish"""
+        deleted = 0
+        for book_id in book_ids:
+            try:
+                self.delete_book(book_id)
+                deleted += 1
+            except:
+                continue
+        return deleted
 
     def increment_download_count(self, book_id: int):
         """Yuklab olishlar sonini oshirish"""
@@ -226,40 +253,24 @@ class BookDatabase(Database):
         self.execute(sql, parameters=(book_id,), commit=True)
 
     def count_books(self, file_type: str = None):
-        """Kitoblar sonini hisoblash"""
+        """Kitoblar soni"""
         if file_type:
             sql = "SELECT COUNT(*) FROM Books WHERE file_type = ?"
-            return self.execute(sql, parameters=(file_type,), fetchone=True)[0]
+            result = self.execute(sql, parameters=(file_type,), fetchone=True)
         else:
             sql = "SELECT COUNT(*) FROM Books"
-            return self.execute(sql, fetchone=True)[0]
+            result = self.execute(sql, fetchone=True)
+        return result[0] if result else 0
 
-    def count_books_by_category(self, category_id: int, file_type: str = None, include_subcategories: bool = True):
-        """Kategoriya bo'yicha kitoblar sonini hisoblash"""
-        if include_subcategories:
-            # Subkategoriyalarni ham hisoblash
-            category_ids = [category_id]
-            subcats = self.get_subcategories(category_id)
-            category_ids.extend([sub[0] for sub in subcats])
-
-            placeholders = ','.join('?' * len(category_ids))
-
-            if file_type:
-                sql = f"SELECT COUNT(*) FROM Books WHERE category_id IN ({placeholders}) AND file_type = ?"
-                params = category_ids + [file_type]
-            else:
-                sql = f"SELECT COUNT(*) FROM Books WHERE category_id IN ({placeholders})"
-                params = category_ids
-
-            return self.execute(sql, parameters=tuple(params), fetchone=True)[0]
+    def count_books_by_category(self, category_id: int, file_type: str = None):
+        """Kategoriya bo'yicha kitoblar soni"""
+        if file_type:
+            sql = "SELECT COUNT(*) FROM Books WHERE category_id = ? AND file_type = ?"
+            result = self.execute(sql, parameters=(category_id, file_type), fetchone=True)
         else:
-            # Faqat o'sha kategoriya
-            if file_type:
-                sql = "SELECT COUNT(*) FROM Books WHERE category_id = ? AND file_type = ?"
-                return self.execute(sql, parameters=(category_id, file_type), fetchone=True)[0]
-            else:
-                sql = "SELECT COUNT(*) FROM Books WHERE category_id = ?"
-                return self.execute(sql, parameters=(category_id,), fetchone=True)[0]
+            sql = "SELECT COUNT(*) FROM Books WHERE category_id = ?"
+            result = self.execute(sql, parameters=(category_id,), fetchone=True)
+        return result[0] if result else 0
 
     def get_popular_books(self, limit: int = 10, file_type: str = None):
         """Eng ko'p yuklab olingan kitoblar"""
@@ -283,13 +294,45 @@ class BookDatabase(Database):
             """
             return self.execute(sql, parameters=(limit,), fetchall=True)
 
+    # =================== KITOBNI YANGILASH ===================
+
+    def update_book_title(self, book_id: int, new_title: str):
+        """Kitob nomini yangilash"""
+        sql = "UPDATE Books SET title = ? WHERE id = ?"
+        self.execute(sql, parameters=(new_title, book_id), commit=True)
+
+    def update_book_author(self, book_id: int, new_author: str):
+        """Muallif nomini yangilash"""
+        sql = "UPDATE Books SET author = ? WHERE id = ?"
+        self.execute(sql, parameters=(new_author, book_id), commit=True)
+
+    def update_book_narrator(self, book_id: int, new_narrator: str):
+        """Hikoyachi nomini yangilash"""
+        sql = "UPDATE Books SET narrator = ? WHERE id = ?"
+        self.execute(sql, parameters=(new_narrator, book_id), commit=True)
+
+    def update_book_description(self, book_id: int, new_description: str):
+        """Tavsifni yangilash"""
+        sql = "UPDATE Books SET description = ? WHERE id = ?"
+        self.execute(sql, parameters=(new_description, book_id), commit=True)
+
+    def update_book_category(self, book_id: int, new_category_id: int):
+        """Kategoriyani yangilash"""
+        sql = "UPDATE Books SET category_id = ? WHERE id = ?"
+        self.execute(sql, parameters=(new_category_id, book_id), commit=True)
+
+    def update_book_file(self, book_id: int, file_id: str, file_type: str, file_size: int = None, duration: int = None):
+        """Faylni yangilash"""
+        sql = "UPDATE Books SET file_id = ?, file_type = ?, file_size = ?, duration = ? WHERE id = ?"
+        self.execute(sql, parameters=(file_id, file_type, file_size, duration, book_id), commit=True)
+
     # =================== STATISTIKA ===================
 
     def get_statistics(self):
-        """To'liq statistikani olish"""
+        """To'liq statistika"""
         stats = {
             'total_categories': self.count_categories(),
-            'main_categories': len(self.get_main_categories()),
+            'main_categories': len(self.get_main_categories() or []),
             'total_books': self.count_books(),
             'pdf_books': self.count_books('pdf'),
             'audio_books': self.count_books('audio'),

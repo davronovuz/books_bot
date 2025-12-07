@@ -7,7 +7,7 @@ import logging
 from data.config import ADMINS
 from loader import dp, user_db, book_db, bot
 from keyboards.default.default_keyboard import menu_ichki_admin, menu_admin
-from keyboards.default.book_keyboard import (
+from keyboards.default.admin_keyboards import (
     admin_book_main_menu, admin_category_menu, admin_book_menu,
     cancel_button, skip_button, categories_inline_keyboard,
     books_inline_keyboard, confirm_keyboard

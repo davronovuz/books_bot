@@ -1,739 +1,927 @@
+"""
+User Book Handlers - Professional User Panel
+=============================================
+Xususiyatlar:
+- Yangi BookDatabase bilan ishlaydi (dataclass)
+- Yangi keyboards bilan ishlaydi
+- Pagination support
+- FileType enum
+- FTS Search
+- Error handling
+- Rate limiting ready
+- Type hints
+- Clean code (DRY)
+"""
+
 from aiogram import types
 from aiogram.dispatcher import FSMContext
-from aiogram.dispatcher.filters import Text
+from aiogram.dispatcher.filters import Text, CommandStart
 from aiogram.dispatcher.filters.state import State, StatesGroup
+from typing import Optional, Dict, Any
 import logging
+from datetime import datetime
 
-from loader import dp, user_db, book_db, bot
-from keyboards.default.book_keyboard import (
-    user_main_menu, categories_inline_keyboard,
-    books_inline_keyboard, back_button, book_detail_keyboard
+from loader import dp, bot, book_db, user_db
+
+# Database imports
+from database.book_database import (
+    Book, Category, PaginatedResult,
+    FileType, Statistics
 )
+
+# Keyboard imports
+from keyboards.default.user_keyboards import (
+    # Reply keyboards
+    user_main_menu, back_button, cancel_button, back_and_home,
+    # Inline keyboards
+    categories_keyboard, subcategories_keyboard,
+    book_type_keyboard, books_paginated_keyboard, book_detail_keyboard,
+    search_type_keyboard, search_results_keyboard,
+    popular_keyboard, popular_books_keyboard, recent_books_keyboard,
+    close_keyboard,
+    # Helpers
+    Emoji, CallbackParser, truncate_text, get_book_emoji
+)
+
+logger = logging.getLogger(__name__)
 
 
 # =================== STATES ===================
 
-class UserSearchState(StatesGroup):
-    """User qidiruv state'i"""
-    waiting_for_query = State()
+class SearchState(StatesGroup):
+    """Qidiruv holatlari"""
+    waiting_query = State()
 
 
-# =================== YORDAMCHI FUNKSIYALAR ===================
+# =================== CONSTANTS ===================
 
-def format_file_size(size_bytes):
-    """Fayl hajmini formatlash"""
-    if size_bytes is None:
-        return "Noma'lum"
-
-    for unit in ['B', 'KB', 'MB', 'GB']:
-        if size_bytes < 1024.0:
-            return f"{size_bytes:.1f} {unit}"
-        size_bytes /= 1024.0
-    return f"{size_bytes:.1f} TB"
+BOOKS_PER_PAGE = 15
+SEARCH_RESULTS_LIMIT = 30
+POPULAR_LIMIT = 20
+RECENT_LIMIT = 20
 
 
-def format_duration(seconds):
-    """Davomiylikni formatlash"""
-    if not seconds:
-        return "Noma'lum"
+# =================== HELPERS ===================
 
-    hours = seconds // 3600
-    minutes = (seconds % 3600) // 60
-    secs = seconds % 60
+def format_book_info(book: Book, show_category: bool = True) -> str:
+    """Kitob ma'lumotlarini formatlash"""
+    emoji = get_book_emoji(book.file_type)
 
-    if hours > 0:
-        return f"{hours}:{minutes:02d}:{secs:02d}"
-    else:
-        return f"{minutes}:{secs:02d}"
+    text = f"{emoji} <b>{book.title}</b>\n\n"
+
+    if book.author:
+        text += f"✍️ <b>Muallif:</b> {book.author}\n"
+
+    if book.file_type == FileType.AUDIO:
+        if book.narrator:
+            text += f"🎙 <b>Hikoyachi:</b> {book.narrator}\n"
+        if book.duration_formatted:
+            text += f"⏱ <b>Davomiylik:</b> {book.duration_formatted}\n"
+
+    if show_category and book.category_name:
+        text += f"📁 <b>Kategoriya:</b> {book.category_name}\n"
+
+    if book.file_size_formatted:
+        text += f"📦 <b>Hajmi:</b> {book.file_size_formatted}\n"
+
+    text += f"📥 <b>Yuklab olishlar:</b> {book.download_count}\n"
+
+    if book.description:
+        desc = truncate_text(book.description, 300)
+        text += f"\n📄 <i>{desc}</i>"
+
+    return text
 
 
-# =================== START COMMAND ===================
-
-@dp.message_handler(commands="start")
-async def user_start(message: types.Message):
-    """User uchun /start"""
-    telegram_id = message.from_user.id
-    username = message.from_user.username or "User"
-
-    # Foydalanuvchini database'ga qo'shish
-    if not user_db.select_user(telegram_id=telegram_id):
-        user_db.add_user(telegram_id=telegram_id, username=username)
-        logging.info(f"New user registered: {telegram_id} (@{username})")
-
-    # Faol holatga keltirish
-    user_db.update_user_last_active(telegram_id)
-    user_db.activate_user(telegram_id)
-
-    await message.answer(
-        f"📚 <b>Assalomu alaykum, {message.from_user.first_name}!</b>\n\n"
-        "Kitoblar kutubxonasiga xush kelibsiz! 📖🎧\n\n"
-        "Bu yerda siz:\n"
-        "📁 Turli kategoriyalardagi kitoblarni\n"
-        "📕 PDF kitoblarni yuklab olishingiz\n"
-        "🎧 Audio kitoblarni tinglashingiz\n"
-        "🔍 Kerakli kitoblarni qidirishingiz mumkin\n\n"
-        "Kerakli bo'limni tanlang:",
-        reply_markup=user_main_menu()
+def format_statistics(stats: Statistics) -> str:
+    """Statistikani formatlash"""
+    return (
+        f"📊 <b>Kutubxona statistikasi</b>\n\n"
+        f"📁 <b>Kategoriyalar:</b> {stats.total_categories}\n"
+        f"├─ Asosiy: {stats.main_categories}\n"
+        f"└─ Sub: {stats.total_categories - stats.main_categories}\n\n"
+        f"📚 <b>Kitoblar:</b> {stats.total_books}\n"
+        f"├─ {Emoji.BOOK_PDF} PDF: {stats.pdf_books}\n"
+        f"└─ {Emoji.BOOK_AUDIO} Audio: {stats.audio_books}\n\n"
+        f"📥 <b>Jami yuklab olishlar:</b> {stats.total_downloads}"
     )
+
+
+async def send_book_file(message: types.Message, book: Book) -> bool:
+    """Kitob faylini yuborish"""
+    try:
+        emoji = get_book_emoji(book.file_type)
+        caption = f"{emoji} <b>{book.title}</b>"
+
+        if book.author:
+            caption += f"\n✍️ {book.author}"
+
+        if book.file_type == FileType.AUDIO:
+            if book.narrator:
+                caption += f"\n🎙 {book.narrator}"
+
+            await message.answer_audio(
+                audio=book.file_id,
+                caption=caption,
+                duration=book.duration,
+                title=book.title,
+                performer=book.author
+            )
+        else:
+            await message.answer_document(
+                document=book.file_id,
+                caption=caption
+            )
+
+        # Download count ni oshirish
+        book_db.increment_download_count(book.id)
+        logger.info(f"Book downloaded: {book.title} (ID: {book.id})")
+        return True
+
+    except Exception as e:
+        logger.error(f"Error sending book file: {e}")
+        return False
+
+
+async def send_book_file_callback(callback: types.CallbackQuery, book: Book) -> bool:
+    """Kitob faylini callback orqali yuborish"""
+    try:
+        emoji = get_book_emoji(book.file_type)
+        caption = f"{emoji} <b>{book.title}</b>"
+
+        if book.author:
+            caption += f"\n✍️ {book.author}"
+
+        if book.file_type == FileType.AUDIO:
+            if book.narrator:
+                caption += f"\n🎙 {book.narrator}"
+
+            await callback.message.answer_audio(
+                audio=book.file_id,
+                caption=caption,
+                duration=book.duration,
+                title=book.title,
+                performer=book.author
+            )
+        else:
+            await callback.message.answer_document(
+                document=book.file_id,
+                caption=caption
+            )
+
+        # Download count ni oshirish
+        book_db.increment_download_count(book.id)
+        logger.info(f"Book downloaded: {book.title} (ID: {book.id})")
+        return True
+
+    except Exception as e:
+        logger.error(f"Error sending book file: {e}")
+        return False
+
+
+# =================== SEARCH CACHE ===================
+# Oddiy cache (production da Redis ishlatiladi)
+_search_cache: Dict[int, Dict[str, Any]] = {}
+_search_id_counter = 0
+
+
+def cache_search(query: str, user_id: int) -> int:
+    """Qidiruv so'rovini cache qilish"""
+    global _search_id_counter
+    _search_id_counter += 1
+
+    _search_cache[_search_id_counter] = {
+        'query': query,
+        'user_id': user_id,
+        'timestamp': datetime.now()
+    }
+
+    # Eski cache larni tozalash (100 dan ortiq bo'lsa)
+    if len(_search_cache) > 100:
+        oldest_keys = sorted(_search_cache.keys())[:50]
+        for key in oldest_keys:
+            del _search_cache[key]
+
+    return _search_id_counter
+
+
+def get_cached_search(search_id: int) -> Optional[str]:
+    """Cache dan qidiruv so'rovini olish"""
+    if search_id in _search_cache:
+        return _search_cache[search_id]['query']
+    return None
+
+
+# =================== START & MAIN MENU ===================
+
+@dp.message_handler(CommandStart())
+async def cmd_start(message: types.Message, state: FSMContext):
+    """Start buyrug'i"""
+    # State ni tozalash
+    current = await state.get_state()
+    if current:
+        await state.finish()
+
+    # Foydalanuvchini ro'yxatdan o'tkazish
+    user = user_db.select_user(telegram_id=message.from_user.id)
+    if not user:
+        try:
+            user_db.add_user(
+                telegram_id=message.from_user.id,
+                full_name=message.from_user.full_name,
+                username=message.from_user.username
+            )
+            logger.info(f"New user registered: {message.from_user.id}")
+        except Exception as e:
+            logger.error(f"Error registering user: {e}")
+
+    # Salomlashish
+    stats = book_db.get_statistics()
+
+    text = (
+        f"👋 <b>Assalomu alaykum, {message.from_user.first_name}!</b>\n\n"
+        f"📚 <b>Kutubxona botiga xush kelibsiz!</b>\n\n"
+        f"📖 Kitoblar: <b>{stats.total_books}</b>\n"
+        f"├─ {Emoji.BOOK_PDF} PDF: {stats.pdf_books}\n"
+        f"└─ {Emoji.BOOK_AUDIO} Audio: {stats.audio_books}\n\n"
+        f"Quyidagi menyudan foydalaning:"
+    )
+
+    await message.answer(text, reply_markup=user_main_menu())
+
+
+@dp.message_handler(Text(equals=f"{Emoji.HOME} Bosh menyu"))
+async def go_home(message: types.Message, state: FSMContext):
+    """Bosh menyuga qaytish"""
+    current = await state.get_state()
+    if current:
+        await state.finish()
+
+    await message.answer("🏠 <b>Bosh menyu</b>", reply_markup=user_main_menu())
+
+
+@dp.message_handler(Text(equals=f"{Emoji.BACK} Orqaga"))
+async def go_back(message: types.Message, state: FSMContext):
+    """Orqaga (state ni tozalash)"""
+    current = await state.get_state()
+    if current:
+        await state.finish()
+        await message.answer("🏠 <b>Bosh menyu</b>", reply_markup=user_main_menu())
+    else:
+        await message.answer("🏠 <b>Bosh menyu</b>", reply_markup=user_main_menu())
 
 
 # =================== KATEGORIYALAR ===================
 
-@dp.message_handler(Text(equals="📚 Kategoriyalar"))
-async def show_categories_to_user(message: types.Message):
-    """Foydalanuvchiga asosiy kategoriyalarni ko'rsatish"""
-    main_categories = book_db.get_main_categories()
+@dp.message_handler(Text(equals=f"{Emoji.FOLDER} Kategoriyalar"))
+async def show_categories(message: types.Message):
+    """Kategoriyalarni ko'rsatish"""
+    categories = book_db.get_categories_with_book_count()
+    main_cats = [c for c in categories if c.parent_id is None]
 
-    if not main_categories:
+    if not main_cats:
         await message.answer(
-            "📂 <b>Hozircha kategoriyalar yo'q.</b>\n\n"
-            "Tez orada kitoblar qo'shiladi! 📚",
+            "📭 <b>Kategoriyalar mavjud emas</b>\n\n"
+            "Tez orada kitoblar qo'shiladi!",
             reply_markup=user_main_menu()
         )
         return
 
-    keyboard = categories_inline_keyboard(main_categories, action_prefix="user_main_cat", row_width=2)
-
-    text = "📚 <b>Kategoriyalar:</b>\n\n"
-
-    for cat in main_categories:
-        book_count = book_db.count_books_by_category(cat[0], include_subcategories=True)
-        text += f"📁 {cat[1]} - <b>{book_count}</b> ta kitob\n"
-
-    text += "\n<i>Kategoriyani tanlang:</i>"
+    text = "📚 <b>Kategoriyalar</b>\n\nQaysi kategoriyadan kitob izlaysiz?"
+    keyboard = categories_keyboard(main_cats, prefix="cat", show_book_count=True)
 
     await message.answer(text, reply_markup=keyboard)
 
 
-@dp.callback_query_handler(lambda c: c.data.startswith("user_main_cat:"))
-async def show_main_category_content(callback: types.CallbackQuery):
-    """Asosiy kategoriya tanlanganda subkategoriya yoki kitoblarni ko'rsatish"""
-    main_cat_id = int(callback.data.split(":")[1])
-    main_cat = book_db.get_category_by_id(main_cat_id)
+@dp.callback_query_handler(lambda c: c.data.startswith("cat:"))
+async def category_selected(callback: types.CallbackQuery):
+    """Kategoriya tanlandi"""
+    cat_id = CallbackParser.get_int_param(callback.data, 0)
+    category = book_db.get_category_by_id(cat_id)
 
-    # Subkategoriyalar bormi?
-    subcats = book_db.get_subcategories(main_cat_id)
+    if not category:
+        await callback.answer("❌ Kategoriya topilmadi!", show_alert=True)
+        return
+
+    # Subkategoriyalar bor-yo'qligini tekshirish
+    subcats = book_db.get_subcategories(cat_id)
 
     if subcats:
-        # Subkategoriyalar mavjud
-        keyboard = categories_inline_keyboard(subcats, action_prefix="user_sub_cat", row_width=2)
+        # Subkategoriyalarni ko'rsatish
+        subcats_with_count = book_db.get_categories_with_book_count()
+        subcats_filtered = [c for c in subcats_with_count if c.parent_id == cat_id]
 
-        # "Barcha kitoblar" tugmasini qo'shish (agar asosiy kategoriyada ham kitoblar bo'lsa)
-        direct_books = book_db.get_books_by_category(main_cat_id, include_subcategories=False)
-        if direct_books:
-            keyboard.row(types.InlineKeyboardButton(
-                f"📚 Barcha kitoblar ({len(direct_books)})",
-                callback_data=f"user_cat_books:{main_cat_id}"
-            ))
+        keyboard = subcategories_keyboard(
+            subcats_filtered,
+            parent_id=cat_id,
+            show_book_count=True
+        )
 
-        keyboard.row(types.InlineKeyboardButton("🔙 Orqaga", callback_data="back_to_main_cats"))
-
-        text = f"📁 <b>{main_cat[1]}</b>\n\n"
-        if main_cat[2]:
-            text += f"<i>{main_cat[2]}</i>\n\n"
-
-        text += "<b>Subkategoriyalar:</b>\n\n"
-        for sub in subcats:
-            sub_book_count = book_db.count_books_by_category(sub[0], include_subcategories=False)
-            text += f"📂 {sub[1]} - {sub_book_count} ta kitob\n"
-
-        text += "\n<i>Tanlang:</i>"
-
-        await callback.message.edit_text(text, reply_markup=keyboard)
+        await callback.message.edit_text(
+            f"📂 <b>{category.name}</b>\n\nSubkategoriyani tanlang:",
+            reply_markup=keyboard
+        )
     else:
-        # Subkategoriya yo'q, to'g'ridan-to'g'ri kitoblar
-        books = book_db.get_books_by_category(main_cat_id)
+        # Kitob turini tanlash
+        pdf_count = book_db.count_books_by_category(cat_id, FileType.PDF)
+        audio_count = book_db.count_books_by_category(cat_id, FileType.AUDIO)
 
-        if not books:
-            await callback.message.edit_text(
-                f"📂 <b>{main_cat[1]}</b>\n\n"
-                f"Bu kategoriyada hozircha kitoblar yo'q. 😔"
-            )
-            await callback.answer()
-            return
+        keyboard = book_type_keyboard(
+            cat_id,
+            pdf_count=pdf_count,
+            audio_count=audio_count,
+            back_callback="back:categories"
+        )
 
-        # PDF va Audio ajratish
-        pdf_books = [b for b in books if b[3] == 'pdf']
-        audio_books = [b for b in books if b[3] == 'audio']
-
-        keyboard = types.InlineKeyboardMarkup(row_width=1)
-
-        if pdf_books:
-            keyboard.row(types.InlineKeyboardButton(
-                f"📕 PDF kitoblar ({len(pdf_books)})",
-                callback_data=f"user_cat_pdf:{main_cat_id}"
-            ))
-
-        if audio_books:
-            keyboard.row(types.InlineKeyboardButton(
-                f"🎧 Audio kitoblar ({len(audio_books)})",
-                callback_data=f"user_cat_audio:{main_cat_id}"
-            ))
-
-        keyboard.row(types.InlineKeyboardButton("🔙 Orqaga", callback_data="back_to_main_cats"))
-
-        text = f"📁 <b>{main_cat[1]}</b>\n\n"
-        if main_cat[2]:
-            text += f"<i>{main_cat[2]}</i>\n\n"
-
-        text += f"📖 Jami: <b>{len(books)}</b> ta kitob\n"
-        text += f"📕 PDF: {len(pdf_books)} | 🎧 Audio: {len(audio_books)}\n\n"
-        text += "<i>Turni tanlang:</i>"
-
-        await callback.message.edit_text(text, reply_markup=keyboard)
+        await callback.message.edit_text(
+            f"📁 <b>{category.name}</b>\n\n"
+            f"{Emoji.BOOK_PDF} PDF: {pdf_count} ta\n"
+            f"{Emoji.BOOK_AUDIO} Audio: {audio_count} ta\n\n"
+            f"Turni tanlang:",
+            reply_markup=keyboard
+        )
 
     await callback.answer()
 
 
-@dp.callback_query_handler(lambda c: c.data.startswith("user_sub_cat:"))
-async def show_subcategory_books(callback: types.CallbackQuery):
-    """Subkategoriya kitoblarini ko'rsatish"""
-    sub_cat_id = int(callback.data.split(":")[1])
-    sub_cat = book_db.get_category_by_id(sub_cat_id)
-    books = book_db.get_books_by_category(sub_cat_id)
+@dp.callback_query_handler(lambda c: c.data.startswith("subcat:"))
+async def subcategory_selected(callback: types.CallbackQuery):
+    """Subkategoriya tanlandi"""
+    sub_id = CallbackParser.get_int_param(callback.data, 0)
+    subcategory = book_db.get_category_by_id(sub_id)
 
-    if not books:
+    if not subcategory:
+        await callback.answer("❌ Kategoriya topilmadi!", show_alert=True)
+        return
+
+    # Kitob turini tanlash
+    pdf_count = book_db.count_books_by_category(sub_id, FileType.PDF)
+    audio_count = book_db.count_books_by_category(sub_id, FileType.AUDIO)
+
+    path = book_db.get_category_path(sub_id)
+
+    keyboard = book_type_keyboard(
+        sub_id,
+        pdf_count=pdf_count,
+        audio_count=audio_count,
+        back_callback=f"cat:{subcategory.parent_id}"
+    )
+
+    await callback.message.edit_text(
+        f"📂 <b>{path}</b>\n\n"
+        f"{Emoji.BOOK_PDF} PDF: {pdf_count} ta\n"
+        f"{Emoji.BOOK_AUDIO} Audio: {audio_count} ta\n\n"
+        f"Turni tanlang:",
+        reply_markup=keyboard
+    )
+
+    await callback.answer()
+
+
+@dp.callback_query_handler(lambda c: c.data.startswith("type:"))
+async def book_type_selected(callback: types.CallbackQuery):
+    """Kitob turi tanlandi (pdf/audio)"""
+    parts = callback.data.split(":")
+    file_type_str = parts[1]
+    cat_id = int(parts[2])
+
+    file_type = FileType.PDF if file_type_str == "pdf" else FileType.AUDIO
+
+    # Kitoblarni olish
+    result = book_db.get_books(
+        category_id=cat_id,
+        file_type=file_type,
+        page=1,
+        per_page=BOOKS_PER_PAGE
+    )
+
+    if not result.items:
         await callback.message.edit_text(
-            f"📂 <b>{sub_cat[1]}</b>\n\n"
-            f"Bu kategoriyada hozircha kitoblar yo'q. 😔"
+            "📭 Bu kategoriyada kitoblar yo'q.",
+            reply_markup=book_type_keyboard(cat_id, 0, 0, "back:categories")
         )
         await callback.answer()
         return
 
-    # PDF va Audio ajratish
-    pdf_books = [b for b in books if b[3] == 'pdf']
-    audio_books = [b for b in books if b[3] == 'audio']
+    category = book_db.get_category_by_id(cat_id)
+    path = book_db.get_category_path(cat_id) if category else "Kategoriya"
+    emoji = Emoji.BOOK_PDF if file_type == FileType.PDF else Emoji.BOOK_AUDIO
 
-    keyboard = types.InlineKeyboardMarkup(row_width=1)
+    keyboard = books_paginated_keyboard(
+        result,
+        back_callback=f"backtype:{cat_id}",
+        category_id=cat_id,
+        file_type=file_type_str
+    )
 
-    if pdf_books:
-        keyboard.row(types.InlineKeyboardButton(
-            f"📕 PDF kitoblar ({len(pdf_books)})",
-            callback_data=f"user_cat_pdf:{sub_cat_id}"
-        ))
+    await callback.message.edit_text(
+        f"{emoji} <b>{path}</b>\n\n"
+        f"📚 {result.total} ta kitob topildi.\n"
+        f"Yuklab olish uchun tanlang:",
+        reply_markup=keyboard
+    )
 
-    if audio_books:
-        keyboard.row(types.InlineKeyboardButton(
-            f"🎧 Audio kitoblar ({len(audio_books)})",
-            callback_data=f"user_cat_audio:{sub_cat_id}"
-        ))
-
-    # Parent kategoriyaga qaytish
-    parent_id = sub_cat[3]  # parent_id
-    keyboard.row(types.InlineKeyboardButton("🔙 Orqaga", callback_data=f"user_main_cat:{parent_id}"))
-
-    path = book_db.get_category_path(sub_cat_id)
-
-    text = f"📂 <b>{path}</b>\n\n"
-    if sub_cat[2]:
-        text += f"<i>{sub_cat[2]}</i>\n\n"
-
-    text += f"📖 Jami: <b>{len(books)}</b> ta kitob\n"
-    text += f"📕 PDF: {len(pdf_books)} | 🎧 Audio: {len(audio_books)}\n\n"
-    text += "<i>Turni tanlang:</i>"
-
-    await callback.message.edit_text(text, reply_markup=keyboard)
     await callback.answer()
 
 
-@dp.callback_query_handler(lambda c: c.data.startswith("user_cat_books:"))
-async def show_all_category_books(callback: types.CallbackQuery):
-    """Kategoriya va subkategoriyalarining barcha kitoblarini ko'rsatish"""
-    cat_id = int(callback.data.split(":")[1])
-    cat = book_db.get_category_by_id(cat_id)
-    books = book_db.get_books_by_category(cat_id, include_subcategories=True)
-
-    if not books:
-        await callback.answer("Bu kategoriyada kitoblar yo'q!", show_alert=True)
-        return
-
-    # PDF va Audio ajratish
-    pdf_books = [b for b in books if b[3] == 'pdf']
-    audio_books = [b for b in books if b[3] == 'audio']
-
-    keyboard = types.InlineKeyboardMarkup(row_width=1)
-
-    if pdf_books:
-        keyboard.row(types.InlineKeyboardButton(
-            f"📕 PDF kitoblar ({len(pdf_books)})",
-            callback_data=f"user_cat_pdf:{cat_id}:all"
-        ))
-
-    if audio_books:
-        keyboard.row(types.InlineKeyboardButton(
-            f"🎧 Audio kitoblar ({len(audio_books)})",
-            callback_data=f"user_cat_audio:{cat_id}:all"
-        ))
-
-    keyboard.row(types.InlineKeyboardButton("🔙 Orqaga", callback_data=f"user_main_cat:{cat_id}"))
-
-    text = f"📁 <b>{cat[1]} - Barcha kitoblar</b>\n\n"
-    text += f"📖 Jami: <b>{len(books)}</b> ta kitob\n"
-    text += f"📕 PDF: {len(pdf_books)} | 🎧 Audio: {len(audio_books)}\n\n"
-    text += "<i>Turni tanlang:</i>"
-
-    await callback.message.edit_text(text, reply_markup=keyboard)
-    await callback.answer()
-
-
-@dp.callback_query_handler(lambda c: c.data.startswith("user_cat_pdf:"))
-async def show_pdf_books(callback: types.CallbackQuery):
-    """PDF kitoblarni ko'rsatish"""
+@dp.callback_query_handler(lambda c: c.data.startswith("pg:"))
+async def books_pagination(callback: types.CallbackQuery):
+    """Kitoblar pagination"""
     parts = callback.data.split(":")
-    cat_id = int(parts[1])
-    include_subs = len(parts) > 2 and parts[2] == "all"
+    page = int(parts[1])
+    cat_id = int(parts[2]) if parts[2] != "0" else None
+    file_type_str = parts[3] if len(parts) > 3 else "all"
 
-    cat = book_db.get_category_by_id(cat_id)
-    books = book_db.get_books_by_category(cat_id, file_type='pdf', include_subcategories=include_subs)
+    file_type = FileType.PDF if file_type_str == "pdf" else FileType.AUDIO if file_type_str == "audio" else None
 
-    if not books:
-        await callback.answer("PDF kitoblar yo'q!", show_alert=True)
-        return
+    result = book_db.get_books(
+        category_id=cat_id,
+        file_type=file_type,
+        page=page,
+        per_page=BOOKS_PER_PAGE
+    )
 
-    # Orqaga callback - dinamik
-    if cat[3] is not None:  # subkategoriya
-        back_callback = f"user_sub_cat:{cat_id}"
-    else:  # asosiy kategoriya
-        back_callback = f"user_main_cat:{cat_id}"
+    keyboard = books_paginated_keyboard(
+        result,
+        back_callback=f"backtype:{cat_id or 0}",
+        category_id=cat_id,
+        file_type=file_type_str
+    )
 
-    keyboard = books_inline_keyboard(books, action_prefix="user_book", back_callback=back_callback)
+    emoji = Emoji.BOOK_PDF if file_type == FileType.PDF else Emoji.BOOK_AUDIO if file_type == FileType.AUDIO else "📚"
 
-    path = book_db.get_category_path(cat_id)
+    await callback.message.edit_text(
+        f"{emoji} Sahifa: {page}/{result.total_pages}\n"
+        f"📚 Jami: {result.total} ta",
+        reply_markup=keyboard
+    )
 
-    text = f"📕 <b>{path} - PDF kitoblar</b>\n\n"
-    text += f"📖 Topildi: <b>{len(books)}</b> ta PDF kitob\n\n"
-    text += "<i>Kitobni tanlang:</i>"
-
-    await callback.message.edit_text(text, reply_markup=keyboard)
     await callback.answer()
 
 
-@dp.callback_query_handler(lambda c: c.data.startswith("user_cat_audio:"))
-async def show_audio_books(callback: types.CallbackQuery):
-    """Audio kitoblarni ko'rsatish"""
-    parts = callback.data.split(":")
-    cat_id = int(parts[1])
-    include_subs = len(parts) > 2 and parts[2] == "all"
+# =================== KITOB YUKLAB OLISH ===================
 
-    cat = book_db.get_category_by_id(cat_id)
-    books = book_db.get_books_by_category(cat_id, file_type='audio', include_subcategories=include_subs)
-
-    if not books:
-        await callback.answer("Audio kitoblar yo'q!", show_alert=True)
-        return
-
-    # Orqaga callback - dinamik
-    if cat[3] is not None:  # subkategoriya
-        back_callback = f"user_sub_cat:{cat_id}"
-    else:  # asosiy kategoriya
-        back_callback = f"user_main_cat:{cat_id}"
-
-    keyboard = books_inline_keyboard(books, action_prefix="user_book", back_callback=back_callback)
-
-    path = book_db.get_category_path(cat_id)
-
-    text = f"🎧 <b>{path} - Audio kitoblar</b>\n\n"
-    text += f"📖 Topildi: <b>{len(books)}</b> ta audio kitob\n\n"
-    text += "<i>Kitobni tanlang:</i>"
-
-    await callback.message.edit_text(text, reply_markup=keyboard)
-    await callback.answer()
-
-
-# =================== KITOB TAFSILOTLARI VA YUKLAB OLISH ===================
-
-@dp.callback_query_handler(lambda c: c.data.startswith("user_book:"))
-async def show_book_details(callback: types.CallbackQuery):
-    """Kitob tafsilotlarini ko'rsatish"""
-    book_id = int(callback.data.split(":")[1])
-    book = book_db.get_book_by_id(book_id)
-
-    if not book:
-        await callback.message.edit_text("❌ Kitob topilmadi!")
-        await callback.answer()
-        return
-
-    emoji = "📕" if book[3] == 'pdf' else "🎧"
-    type_name = "PDF" if book[3] == 'pdf' else "Audio"
-
-    text = f"{emoji} <b>{book[1]}</b>\n\n"
-
-    if book[4]:  # author
-        text += f"✍️ <b>Muallif:</b> {book[4]}\n"
-
-    if book[5]:  # narrator (audio uchun)
-        text += f"🎙 <b>Hikoyachi:</b> {book[5]}\n"
-
-    text += f"📁 <b>Kategoriya:</b> {book[-1]}\n"  # category_name
-
-    if book[9]:  # file_size
-        text += f"📦 <b>Hajmi:</b> {format_file_size(book[9])}\n"
-
-    if book[8]:  # duration (audio uchun)
-        text += f"⏱ <b>Davomiyligi:</b> {format_duration(book[8])}\n"
-
-    text += f"📥 <b>Yuklab olishlar:</b> {book[10]} marta\n"
-
-    if book[7]:  # description
-        text += f"\n📝 <b>Tavsif:</b>\n<i>{book[7]}</i>\n"
-
-    keyboard = book_detail_keyboard(book_id, book[3])  # file_type ham yuboramiz
-
-    await callback.message.edit_text(text, reply_markup=keyboard)
-    await callback.answer()
-
-
-@dp.callback_query_handler(lambda c: c.data.startswith("download_book:"))
+@dp.callback_query_handler(lambda c: c.data.startswith("dl:"))
 async def download_book(callback: types.CallbackQuery):
-    """Kitobni yuklab berish (PDF yoki Audio)"""
-    book_id = int(callback.data.split(":")[1])
+    """Kitobni yuklab olish"""
+    book_id = CallbackParser.get_int_param(callback.data, 0)
     book = book_db.get_book_by_id(book_id)
 
     if not book:
         await callback.answer("❌ Kitob topilmadi!", show_alert=True)
         return
 
-    try:
-        # Yuklab olishlar sonini oshirish
-        book_db.increment_download_count(book_id)
+    await callback.answer("📥 Yuklanmoqda...")
 
-        emoji = "📕" if book[3] == 'pdf' else "🎧"
-        type_name = "PDF" if book[3] == 'pdf' else "Audio"
+    success = await send_book_file_callback(callback, book)
 
-        caption = f"{emoji} <b>{book[1]}</b>\n"
-
-        if book[4]:
-            caption += f"✍️ {book[4]}\n"
-        if book[5]:
-            caption += f"🎙 {book[5]}\n"
-
-        caption += f"📁 {book[-1]}\n\n"
-
-        if book[3] == 'pdf':
-            caption += "✅ PDF kitob yuborildi!"
-            # PDF yuborish
-            await callback.message.answer_document(
-                document=book[2],  # file_id
-                caption=caption
-            )
-        else:
-            caption += "✅ Audio kitob yuborildi!"
-            # Audio yuborish
-            await callback.message.answer_audio(
-                audio=book[2],  # file_id
-                caption=caption,
-                title=book[1],
-                performer=book[4] or book[5] or "Nomalum"
-            )
-
-        await callback.answer(f"✅ {type_name} yuborildi!", show_alert=True)
-        logging.info(f"{type_name} book downloaded: {book[1]} by user {callback.from_user.id}")
-
-    except Exception as e:
-        await callback.answer("❌ Yuborishda xatolik!", show_alert=True)
-        logging.error(f"Error downloading book: {e}")
+    if not success:
+        await callback.message.answer(
+            "❌ Xatolik yuz berdi. Iltimos, keyinroq urinib ko'ring."
+        )
 
 
-# =================== QIDIRUV ===================
+@dp.callback_query_handler(lambda c: c.data.startswith("book:"))
+async def show_book_detail(callback: types.CallbackQuery):
+    """Kitob tafsilotlari"""
+    book_id = CallbackParser.get_int_param(callback.data, 0)
+    book = book_db.get_book_by_id(book_id)
 
-@dp.message_handler(Text(equals="🔍 Kitob qidirish"))
-async def start_user_search(message: types.Message, state: FSMContext):
-    """Qidiruv boshlash"""
-    await message.answer(
-        "🔍 <b>Kitob qidirish</b>\n\n"
-        "Kitob, muallif yoki hikoyachi nomini kiriting:\n"
-        "<i>Masalan: Matematika, Alisher Navoiy, O'zbekiston tarixi</i>",
-        reply_markup=back_button()
-    )
-    await UserSearchState.waiting_for_query.set()
-
-
-@dp.message_handler(state=UserSearchState.waiting_for_query)
-async def process_user_search(message: types.Message, state: FSMContext):
-    """Qidiruv so'rovini qayta ishlash"""
-    if message.text == "🔙 Orqaga":
-        await state.finish()
-        await message.answer("🏠 Bosh menyu", reply_markup=user_main_menu())
+    if not book:
+        await callback.answer("❌ Kitob topilmadi!", show_alert=True)
         return
 
-    query = message.text.strip()
-
-    try:
-        results = book_db.search_books(query)
-
-        if not results:
-            await message.answer(
-                f"❌ <b>'{query}'</b> bo'yicha hech narsa topilmadi.\n\n"
-                f"💡 <i>Boshqa so'z bilan qidirib ko'ring yoki kategoriyalarni ko'ring.</i>",
-                reply_markup=user_main_menu()
-            )
-            await state.finish()
-            return
-
-        pdf_results = [b for b in results if b[3] == 'pdf']
-        audio_results = [b for b in results if b[3] == 'audio']
-
-        keyboard = types.InlineKeyboardMarkup(row_width=1)
-
-        if pdf_results:
-            keyboard.row(types.InlineKeyboardButton(
-                f"📕 PDF natijalar ({len(pdf_results)})",
-                callback_data=f"search_results_pdf:{query}"
-            ))
-
-        if audio_results:
-            keyboard.row(types.InlineKeyboardButton(
-                f"🎧 Audio natijalar ({len(audio_results)})",
-                callback_data=f"search_results_audio:{query}"
-            ))
-
-        text = f"🔍 <b>Qidiruv natijasi: '{query}'</b>\n\n"
-        text += f"✅ Topildi: <b>{len(results)}</b> ta kitob\n"
-        text += f"📕 PDF: {len(pdf_results)} | 🎧 Audio: {len(audio_results)}\n\n"
-        text += "<i>Turni tanlang:</i>"
-
-        await message.answer(text, reply_markup=keyboard)
-
-    except Exception as e:
-        await message.answer(
-            f"❌ Qidirishda xatolik yuz berdi.\n\n"
-            f"Iltimos, qaytadan urinib ko'ring.",
-            reply_markup=user_main_menu()
-        )
-        logging.error(f"Error searching books: {e}")
-
-    await state.finish()
-
-
-@dp.callback_query_handler(lambda c: c.data.startswith("search_results_pdf:"))
-async def show_pdf_search_results(callback: types.CallbackQuery):
-    """PDF qidiruv natijalarini ko'rsatish"""
-    query = callback.data.replace("search_results_pdf:", "")
-    results = book_db.search_books(query, file_type='pdf')
-
-    keyboard = books_inline_keyboard(results[:20], action_prefix="user_book", back_callback="back_to_main")
-
-    text = f"🔍 📕 <b>PDF natijalar: '{query}'</b>\n\n"
-    text += f"✅ Topildi: <b>{len(results)}</b> ta PDF kitob\n\n"
-
-    if len(results) > 20:
-        text += f"<i>Birinchi 20 ta ko'rsatilmoqda</i>\n\n"
-
-    text += "<i>Kitobni tanlang:</i>"
+    text = format_book_info(book)
+    keyboard = book_detail_keyboard(book)
 
     await callback.message.edit_text(text, reply_markup=keyboard)
     await callback.answer()
 
 
-@dp.callback_query_handler(lambda c: c.data.startswith("search_results_audio:"))
-async def show_audio_search_results(callback: types.CallbackQuery):
-    """Audio qidiruv natijalarini ko'rsatish"""
-    query = callback.data.replace("search_results_audio:", "")
-    results = book_db.search_books(query, file_type='audio')
+# =================== QIDIRUV ===================
 
-    keyboard = books_inline_keyboard(results[:20], action_prefix="user_book", back_callback="back_to_main")
+@dp.message_handler(Text(equals=f"{Emoji.SEARCH} Qidirish"))
+async def search_start(message: types.Message, state: FSMContext):
+    """Qidiruvni boshlash"""
+    await message.answer(
+        f"🔍 <b>Qidiruv</b>\n\n"
+        f"Kitob nomi, muallif yoki hikoyachi ismini kiriting:\n\n"
+        f"<i>Masalan: Python, Alisher Navoiy, audio kitoblar...</i>",
+        reply_markup=cancel_button()
+    )
+    await SearchState.waiting_query.set()
 
-    text = f"🔍 🎧 <b>Audio natijalar: '{query}'</b>\n\n"
-    text += f"✅ Topildi: <b>{len(results)}</b> ta audio kitob\n\n"
 
-    if len(results) > 20:
-        text += f"<i>Birinchi 20 ta ko'rsatilmoqda</i>\n\n"
+@dp.message_handler(Text(equals=f"{Emoji.CANCEL} Bekor qilish"), state=SearchState.waiting_query)
+async def search_cancel(message: types.Message, state: FSMContext):
+    """Qidiruvni bekor qilish"""
+    await state.finish()
+    await message.answer("❌ Qidiruv bekor qilindi", reply_markup=user_main_menu())
 
-    text += "<i>Kitobni tanlang:</i>"
 
-    await callback.message.edit_text(text, reply_markup=keyboard)
+@dp.message_handler(state=SearchState.waiting_query)
+async def search_process(message: types.Message, state: FSMContext):
+    """Qidiruv so'rovini qayta ishlash"""
+    query = message.text.strip()
+
+    if len(query) < 2:
+        await message.answer(
+            "⚠️ Kamida 2 ta belgi kiriting!",
+            reply_markup=cancel_button()
+        )
+        return
+
+    if len(query) > 100:
+        query = query[:100]
+
+    # Cache qilish
+    search_id = cache_search(query, message.from_user.id)
+
+    # PDF va Audio natijalarni alohida hisoblash
+    pdf_result = book_db.search_books(query, file_type=FileType.PDF, page=1, per_page=1)
+    audio_result = book_db.search_books(query, file_type=FileType.AUDIO, page=1, per_page=1)
+
+    total = pdf_result.total + audio_result.total
+
+    if total == 0:
+        await message.answer(
+            f"😔 <b>Hech narsa topilmadi</b>\n\n"
+            f"<i>\"{truncate_text(query, 50)}\"</i> bo'yicha natija yo'q.\n\n"
+            f"Boshqa so'z bilan qidirib ko'ring.",
+            reply_markup=user_main_menu()
+        )
+        await state.finish()
+        return
+
+    keyboard = search_type_keyboard(
+        pdf_count=pdf_result.total,
+        audio_count=audio_result.total,
+        search_id=search_id
+    )
+
+    await message.answer(
+        f"🔍 <b>Qidiruv natijalari</b>\n\n"
+        f"<i>\"{truncate_text(query, 50)}\"</i> bo'yicha {total} ta natija.\n\n"
+        f"Turni tanlang:",
+        reply_markup=keyboard
+    )
+
+    await state.finish()
+
+
+@dp.callback_query_handler(lambda c: c.data.startswith("stype:"))
+async def search_type_selected(callback: types.CallbackQuery):
+    """Qidiruv natijasi turi tanlandi"""
+    parts = callback.data.split(":")
+    file_type_str = parts[1]
+    search_id = int(parts[2])
+
+    query = get_cached_search(search_id)
+    if not query:
+        await callback.answer("⚠️ Qidiruv muddati tugadi. Qaytadan qidiring.", show_alert=True)
+        return
+
+    file_type = FileType.PDF if file_type_str == "pdf" else FileType.AUDIO
+
+    result = book_db.search_books(
+        query,
+        file_type=file_type,
+        page=1,
+        per_page=BOOKS_PER_PAGE
+    )
+
+    if not result.items:
+        await callback.message.edit_text("😔 Natijalar topilmadi.")
+        await callback.answer()
+        return
+
+    emoji = Emoji.BOOK_PDF if file_type == FileType.PDF else Emoji.BOOK_AUDIO
+
+    keyboard = search_results_keyboard(
+        result.items,
+        page=1,
+        total_pages=result.total_pages,
+        search_id=search_id,
+        file_type=file_type_str
+    )
+
+    await callback.message.edit_text(
+        f"{emoji} <b>Qidiruv natijalari</b>\n\n"
+        f"<i>\"{truncate_text(query, 40)}\"</i>\n"
+        f"📚 {result.total} ta topildi\n\n"
+        f"Yuklab olish uchun tanlang:",
+        reply_markup=keyboard
+    )
+
+    await callback.answer()
+
+
+@dp.callback_query_handler(lambda c: c.data.startswith("sp:"))
+async def search_pagination(callback: types.CallbackQuery):
+    """Qidiruv natijalari pagination"""
+    parts = callback.data.split(":")
+    page = int(parts[1])
+    search_id = int(parts[2])
+    file_type_str = parts[3]
+
+    query = get_cached_search(search_id)
+    if not query:
+        await callback.answer("⚠️ Qidiruv muddati tugadi. Qaytadan qidiring.", show_alert=True)
+        return
+
+    file_type = FileType.PDF if file_type_str == "pdf" else FileType.AUDIO
+
+    result = book_db.search_books(
+        query,
+        file_type=file_type,
+        page=page,
+        per_page=BOOKS_PER_PAGE
+    )
+
+    keyboard = search_results_keyboard(
+        result.items,
+        page=page,
+        total_pages=result.total_pages,
+        search_id=search_id,
+        file_type=file_type_str
+    )
+
+    emoji = Emoji.BOOK_PDF if file_type == FileType.PDF else Emoji.BOOK_AUDIO
+
+    await callback.message.edit_text(
+        f"{emoji} <b>Qidiruv</b> | Sahifa {page}/{result.total_pages}\n"
+        f"📚 Jami: {result.total} ta",
+        reply_markup=keyboard
+    )
+
+    await callback.answer()
+
+
+@dp.callback_query_handler(lambda c: c.data.startswith("sback:"))
+async def search_back_to_types(callback: types.CallbackQuery):
+    """Qidiruv turi tanlash sahifasiga qaytish"""
+    search_id = CallbackParser.get_int_param(callback.data, 0)
+
+    query = get_cached_search(search_id)
+    if not query:
+        await callback.answer("⚠️ Qidiruv muddati tugadi.", show_alert=True)
+        await callback.message.delete()
+        return
+
+    # Qayta hisoblash
+    pdf_result = book_db.search_books(query, file_type=FileType.PDF, page=1, per_page=1)
+    audio_result = book_db.search_books(query, file_type=FileType.AUDIO, page=1, per_page=1)
+
+    keyboard = search_type_keyboard(
+        pdf_count=pdf_result.total,
+        audio_count=audio_result.total,
+        search_id=search_id
+    )
+
+    await callback.message.edit_text(
+        f"🔍 <b>Qidiruv natijalari</b>\n\n"
+        f"<i>\"{truncate_text(query, 50)}\"</i>\n\n"
+        f"Turni tanlang:",
+        reply_markup=keyboard
+    )
+
     await callback.answer()
 
 
 # =================== MASHHUR KITOBLAR ===================
 
-@dp.message_handler(Text(equals="⭐️ Mashhur kitoblar"))
-async def show_popular_books(message: types.Message):
-    """Eng mashhur kitoblarni ko'rsatish"""
-    popular_pdf = book_db.get_popular_books(10, 'pdf')
-    popular_audio = book_db.get_popular_books(10, 'audio')
+@dp.message_handler(Text(equals=f"{Emoji.FIRE} Mashhurlar"))
+async def show_popular(message: types.Message):
+    """Mashhur kitoblar"""
+    pdf_count = book_db.count_books(file_type=FileType.PDF.value)
+    audio_count = book_db.count_books(file_type=FileType.AUDIO.value)
 
-    if not popular_pdf and not popular_audio:
+    if pdf_count == 0 and audio_count == 0:
         await message.answer(
-            "📚 Hozircha mashhur kitoblar yo'q.",
+            "📭 <b>Kitoblar mavjud emas</b>",
             reply_markup=user_main_menu()
         )
         return
 
-    keyboard = types.InlineKeyboardMarkup(row_width=1)
+    keyboard = popular_keyboard(pdf_count=pdf_count, audio_count=audio_count)
 
-    if popular_pdf:
-        keyboard.row(types.InlineKeyboardButton(
-            f"📕 Mashhur PDF kitoblar ({len(popular_pdf)})",
-            callback_data="popular_pdf"
-        ))
-
-    if popular_audio:
-        keyboard.row(types.InlineKeyboardButton(
-            f"🎧 Mashhur Audio kitoblar ({len(popular_audio)})",
-            callback_data="popular_audio"
-        ))
-
-    text = "⭐️ <b>Eng mashhur kitoblar</b>\n\n"
-    text += "<i>Turni tanlang:</i>"
-
-    await message.answer(text, reply_markup=keyboard)
+    await message.answer(
+        f"🔥 <b>Mashhur kitoblar</b>\n\n"
+        f"Eng ko'p yuklab olingan kitoblar.\n"
+        f"Turni tanlang:",
+        reply_markup=keyboard
+    )
 
 
-@dp.callback_query_handler(lambda c: c.data == "popular_pdf")
-async def show_popular_pdf(callback: types.CallbackQuery):
-    """Mashhur PDF kitoblarni ko'rsatish"""
-    popular_books = book_db.get_popular_books(15, 'pdf')
+@dp.callback_query_handler(lambda c: c.data.startswith("popular:"))
+async def popular_type_selected(callback: types.CallbackQuery):
+    """Mashhur kitoblar turi"""
+    file_type_str = CallbackParser.get_param(callback.data, 0)
+    file_type = FileType.PDF if file_type_str == "pdf" else FileType.AUDIO
 
-    keyboard = books_inline_keyboard(popular_books, action_prefix="user_book", back_callback="back_to_main")
+    books = book_db.get_popular_books(limit=POPULAR_LIMIT, file_type=file_type)
 
-    text = "⭐️ 📕 <b>Eng mashhur PDF kitoblar</b>\n\n"
-    text += f"📖 TOP-{len(popular_books)} eng ko'p yuklab olingan PDF kitoblar\n\n"
-    text += "<i>Kitobni tanlang:</i>"
+    if not books:
+        await callback.message.edit_text("📭 Kitoblar topilmadi.")
+        await callback.answer()
+        return
 
-    await callback.message.edit_text(text, reply_markup=keyboard)
+    emoji = Emoji.BOOK_PDF if file_type == FileType.PDF else Emoji.BOOK_AUDIO
+
+    keyboard = popular_books_keyboard(books, file_type_str)
+
+    await callback.message.edit_text(
+        f"{emoji} <b>TOP-{len(books)} Mashhur kitoblar</b>\n\n"
+        f"Yuklab olish uchun tanlang:",
+        reply_markup=keyboard
+    )
+
     await callback.answer()
 
 
-@dp.callback_query_handler(lambda c: c.data == "popular_audio")
-async def show_popular_audio(callback: types.CallbackQuery):
-    """Mashhur Audio kitoblarni ko'rsatish"""
-    popular_books = book_db.get_popular_books(15, 'audio')
+# =================== YANGI KITOBLAR ===================
 
-    keyboard = books_inline_keyboard(popular_books, action_prefix="user_book", back_callback="back_to_main")
+@dp.message_handler(Text(equals=f"{Emoji.NEW} Yangilar"))
+async def show_recent(message: types.Message):
+    """Yangi qo'shilgan kitoblar"""
+    books = book_db.get_recent_books(limit=RECENT_LIMIT)
 
-    text = "⭐️ 🎧 <b>Eng mashhur Audio kitoblar</b>\n\n"
-    text += f"📖 TOP-{len(popular_books)} eng ko'p tinglanilgan audio kitoblar\n\n"
-    text += "<i>Kitobni tanlang:</i>"
+    if not books:
+        await message.answer(
+            "📭 <b>Yangi kitoblar yo'q</b>",
+            reply_markup=user_main_menu()
+        )
+        return
 
-    await callback.message.edit_text(text, reply_markup=keyboard)
-    await callback.answer()
+    keyboard = recent_books_keyboard(books)
+
+    await message.answer(
+        f"🆕 <b>Yangi qo'shilgan kitoblar</b>\n\n"
+        f"So'nggi {len(books)} ta kitob.\n"
+        f"Yuklab olish uchun tanlang:",
+        reply_markup=keyboard
+    )
 
 
 # =================== STATISTIKA ===================
 
-@dp.message_handler(Text(equals="📊 Statistika"))
-async def show_user_statistics(message: types.Message):
-    """User uchun statistika"""
+@dp.message_handler(Text(equals=f"{Emoji.STATS} Statistika"))
+async def show_statistics(message: types.Message):
+    """Statistikani ko'rsatish"""
+    stats = book_db.get_statistics()
+
+    # Foydalanuvchilar soni
     try:
-        stats = book_db.get_statistics()
+        users_count = user_db.count_users()
+        users_text = f"\n\n👥 <b>Foydalanuvchilar:</b> {users_count}"
+    except:
+        users_text = ""
 
-        text = (
-            "📊 <b>Kutubxona statistikasi</b>\n\n"
-            f"📁 Kategoriyalar: <b>{stats['total_categories']}</b>\n"
-            f"   ├─ Asosiy: {stats['main_categories']}\n"
-            f"   └─ Subkategoriyalar: {stats['total_categories'] - stats['main_categories']}\n\n"
-            f"📖 Kitoblar: <b>{stats['total_books']}</b>\n"
-            f"   ├─ 📕 PDF: {stats['pdf_books']}\n"
-            f"   └─ 🎧 Audio: {stats['audio_books']}\n\n"
-        )
+    text = format_statistics(stats) + users_text
 
-        # Eng mashhur kitoblar
-        popular_pdf = book_db.get_popular_books(3, 'pdf')
-        popular_audio = book_db.get_popular_books(3, 'audio')
+    # TOP 5 kitoblar
+    popular = book_db.get_popular_books(5)
+    if popular:
+        text += "\n\n⭐️ <b>TOP-5 kitoblar:</b>\n"
+        for i, book in enumerate(popular, 1):
+            emoji = get_book_emoji(book.file_type)
+            medal = "🥇" if i == 1 else "🥈" if i == 2 else "🥉" if i == 3 else f"{i}."
+            text += f"{medal} {emoji} {truncate_text(book.title, 25)} — {book.download_count}\n"
 
-        if popular_pdf:
-            text += "⭐️ <b>TOP-3 PDF kitoblar:</b>\n"
-            for i, book in enumerate(popular_pdf, 1):
-                text += f"{i}. {book[1]} - {book[10]} marta\n"
-            text += "\n"
-
-        if popular_audio:
-            text += "🎵 <b>TOP-3 Audio kitoblar:</b>\n"
-            for i, book in enumerate(popular_audio, 1):
-                text += f"{i}. {book[1]} - {book[10]} marta\n"
-
-        await message.answer(text, reply_markup=user_main_menu())
-
-    except Exception as e:
-        await message.answer(
-            "❌ Statistikani yuklashda xatolik",
-            reply_markup=user_main_menu()
-        )
-        logging.error(f"Error showing user statistics: {e}")
+    await message.answer(text, reply_markup=close_keyboard())
 
 
 # =================== YORDAM ===================
 
-@dp.message_handler(Text(equals="ℹ️ Yordam"))
+@dp.message_handler(Text(equals=f"{Emoji.HELP} Yordam"))
 async def show_help(message: types.Message):
-    """Yordam bo'limi"""
+    """Yordam"""
     text = (
-        "ℹ️ <b>Yordam</b>\n\n"
-        "📚 <b>Kategoriyalar</b> - Barcha kategoriyalarni ko'ring\n"
-        "🔍 <b>Kitob qidirish</b> - Kitob, muallif yoki hikoyachi nomini qidiring\n"
-        "⭐️ <b>Mashhur kitoblar</b> - Eng ko'p yuklab olingan kitoblar\n"
-        "📊 <b>Statistika</b> - Kutubxona haqida ma'lumot\n\n"
-        "<b>Qanday foydalanish:</b>\n"
-        "1️⃣ Kategoriyalar bo'limiga kiring\n"
-        "2️⃣ Kerakli kategoriyani tanlang\n"
-        "3️⃣ PDF yoki Audio turini tanlang\n"
-        "4️⃣ Kitobni tanlang va tafsilotlarni ko'ring\n"
-        "5️⃣ 'Yuklab olish' tugmasini bosing\n\n"
-        "✅ PDF kitoblar - yuklab olish\n"
-        "✅ Audio kitoblar - tinglash\n\n"
-        "❓ Savollar bo'lsa, admin bilan bog'laning."
+        f"ℹ️ <b>Yordam</b>\n\n"
+        f"<b>Bot imkoniyatlari:</b>\n\n"
+        f"📁 <b>Kategoriyalar</b> — Kitoblarni kategoriyalar bo'yicha ko'rish\n\n"
+        f"🔍 <b>Qidirish</b> — Kitob nomi, muallif yoki hikoyachi bo'yicha qidirish\n\n"
+        f"🔥 <b>Mashhurlar</b> — Eng ko'p yuklangan kitoblar\n\n"
+        f"🆕 <b>Yangilar</b> — So'nggi qo'shilgan kitoblar\n\n"
+        f"📊 <b>Statistika</b> — Kutubxona statistikasi\n\n"
+        f"<b>Qanday foydalanish:</b>\n"
+        f"1. Kategoriya tanlang\n"
+        f"2. PDF yoki Audio ni tanlang\n"
+        f"3. Kitobni bosing — avtomatik yuklanadi!\n\n"
+        f"<b>Savol va takliflar uchun:</b>\n"
+        f"@admin_username"
     )
 
-    await message.answer(text, reply_markup=user_main_menu())
+    await message.answer(text, reply_markup=close_keyboard())
 
 
-# =================== ORQAGA TUGMASI ===================
+# =================== BACK HANDLERS ===================
 
-@dp.message_handler(Text(equals="🔙 Orqaga"), state="*")
-async def back_to_user_main(message: types.Message, state: FSMContext):
-    """Bosh menyuga qaytish"""
-    current_state = await state.get_state()
-    if current_state:
-        await state.finish()
+@dp.callback_query_handler(lambda c: c.data.startswith("back:"))
+async def back_handler(callback: types.CallbackQuery):
+    """Orqaga navigatsiya"""
+    target = CallbackParser.get_param(callback.data, 0)
 
-    await message.answer(
-        "🏠 <b>Bosh menyu</b>",
-        reply_markup=user_main_menu()
-    )
+    if target == "main":
+        await callback.message.delete()
+        await callback.message.answer("🏠 <b>Bosh menyu</b>", reply_markup=user_main_menu())
 
+    elif target == "categories":
+        categories = book_db.get_categories_with_book_count()
+        main_cats = [c for c in categories if c.parent_id is None]
 
-# =================== CALLBACK HANDLERS ===================
+        keyboard = categories_keyboard(main_cats, prefix="cat", show_book_count=True)
+        await callback.message.edit_text(
+            "📚 <b>Kategoriyalar</b>\n\nQaysi kategoriyadan kitob izlaysiz?",
+            reply_markup=keyboard
+        )
 
-@dp.callback_query_handler(lambda c: c.data == "back_to_main_cats")
-async def back_to_main_categories(callback: types.CallbackQuery):
-    """Asosiy kategoriyalarga qaytish"""
-    main_categories = book_db.get_main_categories()
-    keyboard = categories_inline_keyboard(main_categories, action_prefix="user_main_cat", row_width=2)
+    elif target == "popular":
+        pdf_count = book_db.count_books(file_type=FileType.PDF.value)
+        audio_count = book_db.count_books(file_type=FileType.AUDIO.value)
 
-    text = "📚 <b>Kategoriyalar:</b>\n\n"
+        keyboard = popular_keyboard(pdf_count=pdf_count, audio_count=audio_count)
+        await callback.message.edit_text(
+            f"🔥 <b>Mashhur kitoblar</b>\n\nTurni tanlang:",
+            reply_markup=keyboard
+        )
 
-    for cat in main_categories:
-        book_count = book_db.count_books_by_category(cat[0], include_subcategories=True)
-        text += f"📁 {cat[1]} - <b>{book_count}</b> ta kitob\n"
-
-    text += "\n<i>Kategoriyani tanlang:</i>"
-
-    await callback.message.edit_text(text, reply_markup=keyboard)
     await callback.answer()
 
 
-@dp.callback_query_handler(lambda c: c.data == "back_to_main")
-async def back_to_main_callback(callback: types.CallbackQuery):
-    """Bosh menyuga qaytish"""
+@dp.callback_query_handler(lambda c: c.data.startswith("backtype:"))
+async def back_to_type(callback: types.CallbackQuery):
+    """Tur tanlash sahifasiga qaytish"""
+    cat_id = CallbackParser.get_int_param(callback.data, 0)
+
+    if cat_id == 0:
+        # Bosh menyuga
+        await callback.message.delete()
+        await callback.message.answer("🏠 <b>Bosh menyu</b>", reply_markup=user_main_menu())
+        return
+
+    category = book_db.get_category_by_id(cat_id)
+    if not category:
+        await callback.answer("❌ Kategoriya topilmadi!", show_alert=True)
+        return
+
+    pdf_count = book_db.count_books_by_category(cat_id, FileType.PDF)
+    audio_count = book_db.count_books_by_category(cat_id, FileType.AUDIO)
+
+    path = book_db.get_category_path(cat_id)
+
+    # Orqaga callback ni aniqlash
+    if category.parent_id:
+        back_callback = f"cat:{category.parent_id}"
+    else:
+        back_callback = "back:categories"
+
+    keyboard = book_type_keyboard(
+        cat_id,
+        pdf_count=pdf_count,
+        audio_count=audio_count,
+        back_callback=back_callback
+    )
+
+    await callback.message.edit_text(
+        f"📁 <b>{path}</b>\n\n"
+        f"{Emoji.BOOK_PDF} PDF: {pdf_count} ta\n"
+        f"{Emoji.BOOK_AUDIO} Audio: {audio_count} ta\n\n"
+        f"Turni tanlang:",
+        reply_markup=keyboard
+    )
+
+    await callback.answer()
+
+
+# =================== EMPTY & CLOSE ===================
+
+@dp.callback_query_handler(lambda c: c.data in ["empty", "current_page"])
+async def empty_callback(callback: types.CallbackQuery):
+    """Bo'sh callback"""
+    await callback.answer()
+
+
+@dp.callback_query_handler(lambda c: c.data == "close")
+async def close_callback(callback: types.CallbackQuery):
+    """Yopish"""
     await callback.message.delete()
-    await callback.message.answer(
-        "🏠 <b>Bosh menyu</b>",
-        reply_markup=user_main_menu()
-    )
     await callback.answer()
 
 
-# =================== USER AKTIVLIGINI YANGILASH ===================
+# =================== UNKNOWN MESSAGE ===================
 
 @dp.message_handler()
-async def update_user_activity(message: types.Message):
-    """Har bir xabarda userning aktivligini yangilash"""
-    try:
-        telegram_id = message.from_user.id
-        user = user_db.select_user(telegram_id=telegram_id)
+async def unknown_message(message: types.Message, state: FSMContext):
+    """Noma'lum xabar"""
+    current = await state.get_state()
 
-        if user:
-            user_db.update_user_last_active(telegram_id)
-    except Exception as e:
-        logging.error(f"Error updating user activity: {e}")
+    if current:
+        # State ichida - e'tiborsiz qoldirish
+        return
+
+    await message.answer(
+        "🤔 Tushunmadim.\n\n"
+        "Quyidagi menyudan foydalaning:",
+        reply_markup=user_main_menu()
+    )
