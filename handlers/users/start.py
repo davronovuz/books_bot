@@ -287,12 +287,12 @@ async def show_categories(message: types.Message):
         return
 
     text = "📚 <b>Kategoriyalar</b>\n\nQaysi kategoriyadan kitob izlaysiz?"
-    keyboard = categories_keyboard(main_cats, prefix="cat", show_book_count=True)
+    keyboard = categories_keyboard(main_cats, prefix="u_cat", show_book_count=True)
 
     await message.answer(text, reply_markup=keyboard)
 
 
-@dp.callback_query_handler(lambda c: c.data.startswith("cat:"))
+@dp.callback_query_handler(lambda c: c.data.startswith("u_cat:"))
 async def category_selected(callback: types.CallbackQuery):
     """Kategoriya tanlandi"""
     cat_id = CallbackParser.get_int_param(callback.data, 0)
@@ -329,7 +329,7 @@ async def category_selected(callback: types.CallbackQuery):
             cat_id,
             pdf_count=pdf_count,
             audio_count=audio_count,
-            back_callback="back:categories"
+            back_callback="u_back:categories"
         )
 
         await callback.message.edit_text(
@@ -343,7 +343,7 @@ async def category_selected(callback: types.CallbackQuery):
     await callback.answer()
 
 
-@dp.callback_query_handler(lambda c: c.data.startswith("subcat:"))
+@dp.callback_query_handler(lambda c: c.data.startswith("u_subcat:"))
 async def subcategory_selected(callback: types.CallbackQuery):
     """Subkategoriya tanlandi"""
     sub_id = CallbackParser.get_int_param(callback.data, 0)
@@ -363,7 +363,7 @@ async def subcategory_selected(callback: types.CallbackQuery):
         sub_id,
         pdf_count=pdf_count,
         audio_count=audio_count,
-        back_callback=f"cat:{subcategory.parent_id}"
+        back_callback=f"u_cat:{subcategory.parent_id}"
     )
 
     await callback.message.edit_text(
@@ -377,7 +377,7 @@ async def subcategory_selected(callback: types.CallbackQuery):
     await callback.answer()
 
 
-@dp.callback_query_handler(lambda c: c.data.startswith("type:"))
+@dp.callback_query_handler(lambda c: c.data.startswith("u_type:"))
 async def book_type_selected(callback: types.CallbackQuery):
     """Kitob turi tanlandi (pdf/audio)"""
     parts = callback.data.split(":")
@@ -408,7 +408,7 @@ async def book_type_selected(callback: types.CallbackQuery):
 
     keyboard = books_paginated_keyboard(
         result,
-        back_callback=f"backtype:{cat_id}",
+        back_callback=f"u_backtype:{cat_id}",
         category_id=cat_id,
         file_type=file_type_str
     )
@@ -423,7 +423,7 @@ async def book_type_selected(callback: types.CallbackQuery):
     await callback.answer()
 
 
-@dp.callback_query_handler(lambda c: c.data.startswith("pg:"))
+@dp.callback_query_handler(lambda c: c.data.startswith("u_pg:"))
 async def books_pagination(callback: types.CallbackQuery):
     """Kitoblar pagination"""
     parts = callback.data.split(":")
@@ -442,7 +442,7 @@ async def books_pagination(callback: types.CallbackQuery):
 
     keyboard = books_paginated_keyboard(
         result,
-        back_callback=f"backtype:{cat_id or 0}",
+        back_callback=f"u_backtype:{cat_id or 0}",
         category_id=cat_id,
         file_type=file_type_str
     )
@@ -460,7 +460,7 @@ async def books_pagination(callback: types.CallbackQuery):
 
 # =================== KITOB YUKLAB OLISH ===================
 
-@dp.callback_query_handler(lambda c: c.data.startswith("dl:"))
+@dp.callback_query_handler(lambda c: c.data.startswith("u_dl:"))
 async def download_book(callback: types.CallbackQuery):
     """Kitobni yuklab olish"""
     book_id = CallbackParser.get_int_param(callback.data, 0)
@@ -480,7 +480,7 @@ async def download_book(callback: types.CallbackQuery):
         )
 
 
-@dp.callback_query_handler(lambda c: c.data.startswith("book:"))
+@dp.callback_query_handler(lambda c: c.data.startswith("u_book:"))
 async def show_book_detail(callback: types.CallbackQuery):
     """Kitob tafsilotlari"""
     book_id = CallbackParser.get_int_param(callback.data, 0)
@@ -568,7 +568,7 @@ async def search_process(message: types.Message, state: FSMContext):
     await state.finish()
 
 
-@dp.callback_query_handler(lambda c: c.data.startswith("stype:"))
+@dp.callback_query_handler(lambda c: c.data.startswith("u_stype:"))
 async def search_type_selected(callback: types.CallbackQuery):
     """Qidiruv natijasi turi tanlandi"""
     parts = callback.data.split(":")
@@ -615,7 +615,7 @@ async def search_type_selected(callback: types.CallbackQuery):
     await callback.answer()
 
 
-@dp.callback_query_handler(lambda c: c.data.startswith("sp:"))
+@dp.callback_query_handler(lambda c: c.data.startswith("u_sp:"))
 async def search_pagination(callback: types.CallbackQuery):
     """Qidiruv natijalari pagination"""
     parts = callback.data.split(":")
@@ -656,7 +656,7 @@ async def search_pagination(callback: types.CallbackQuery):
     await callback.answer()
 
 
-@dp.callback_query_handler(lambda c: c.data.startswith("sback:"))
+@dp.callback_query_handler(lambda c: c.data.startswith("u_sback:"))
 async def search_back_to_types(callback: types.CallbackQuery):
     """Qidiruv turi tanlash sahifasiga qaytish"""
     search_id = CallbackParser.get_int_param(callback.data, 0)
@@ -712,7 +712,7 @@ async def show_popular(message: types.Message):
     )
 
 
-@dp.callback_query_handler(lambda c: c.data.startswith("popular:"))
+@dp.callback_query_handler(lambda c: c.data.startswith("u_popular:"))
 async def popular_type_selected(callback: types.CallbackQuery):
     """Mashhur kitoblar turi"""
     file_type_str = CallbackParser.get_param(callback.data, 0)
@@ -816,7 +816,7 @@ async def show_help(message: types.Message):
 
 # =================== BACK HANDLERS ===================
 
-@dp.callback_query_handler(lambda c: c.data.startswith("back:"))
+@dp.callback_query_handler(lambda c: c.data.startswith("u_back:"))
 async def back_handler(callback: types.CallbackQuery):
     """Orqaga navigatsiya"""
     target = CallbackParser.get_param(callback.data, 0)
@@ -829,7 +829,7 @@ async def back_handler(callback: types.CallbackQuery):
         categories = book_db.get_categories_with_book_count()
         main_cats = [c for c in categories if c.parent_id is None]
 
-        keyboard = categories_keyboard(main_cats, prefix="cat", show_book_count=True)
+        keyboard = categories_keyboard(main_cats, prefix="u_cat", show_book_count=True)
         await callback.message.edit_text(
             "📚 <b>Kategoriyalar</b>\n\nQaysi kategoriyadan kitob izlaysiz?",
             reply_markup=keyboard
@@ -848,7 +848,7 @@ async def back_handler(callback: types.CallbackQuery):
     await callback.answer()
 
 
-@dp.callback_query_handler(lambda c: c.data.startswith("backtype:"))
+@dp.callback_query_handler(lambda c: c.data.startswith("u_backtype:"))
 async def back_to_type(callback: types.CallbackQuery):
     """Tur tanlash sahifasiga qaytish"""
     cat_id = CallbackParser.get_int_param(callback.data, 0)
@@ -895,13 +895,13 @@ async def back_to_type(callback: types.CallbackQuery):
 
 # =================== EMPTY & CLOSE ===================
 
-@dp.callback_query_handler(lambda c: c.data in ["empty", "current_page"])
+@dp.callback_query_handler(lambda c: c.data in ["u_empty", "u_page_info"])
 async def empty_callback(callback: types.CallbackQuery):
     """Bo'sh callback"""
     await callback.answer()
 
 
-@dp.callback_query_handler(lambda c: c.data == "close")
+@dp.callback_query_handler(lambda c: c.data == "u_close")
 async def close_callback(callback: types.CallbackQuery):
     """Yopish"""
     await callback.message.delete()

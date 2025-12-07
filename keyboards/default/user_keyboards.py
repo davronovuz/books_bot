@@ -143,7 +143,7 @@ def back_and_home() -> ReplyKeyboardMarkup:
 
 def categories_keyboard(
         categories: List["Category"],
-        prefix: str = "cat",
+        prefix: str = "u_cat",
         show_book_count: bool = False,
         back_callback: Optional[str] = None
 ) -> InlineKeyboardMarkup:
@@ -152,7 +152,7 @@ def categories_keyboard(
 
     Args:
         categories: Category dataclass lari ro'yxati
-        prefix: Callback prefix (cat, subcat, etc.)
+        prefix: Callback prefix (u_cat, u_subcat, etc.)
         show_book_count: Kitoblar sonini ko'rsatish
         back_callback: Orqaga tugmasi callback
     """
@@ -162,7 +162,7 @@ def categories_keyboard(
         keyboard.add(
             InlineKeyboardButton(
                 "📭 Kategoriyalar mavjud emas",
-                callback_data="empty"
+                callback_data="u_empty"
             )
         )
         if back_callback:
@@ -222,13 +222,13 @@ def subcategories_keyboard(
         keyboard.add(
             InlineKeyboardButton(
                 "📭 Subkategoriyalar mavjud emas",
-                callback_data="empty"
+                callback_data="u_empty"
             )
         )
         keyboard.add(
             InlineKeyboardButton(
                 f"{Emoji.BACK} Orqaga",
-                callback_data="back:categories"
+                callback_data="u_back:categories"
             )
         )
         return keyboard
@@ -249,14 +249,14 @@ def subcategories_keyboard(
         buttons.append(
             InlineKeyboardButton(
                 text,
-                callback_data=safe_callback(f"subcat:{sub_id}")
+                callback_data=safe_callback(f"u_subcat:{sub_id}")
             )
         )
 
     footer = [
         InlineKeyboardButton(
             f"{Emoji.BACK} Kategoriyalar",
-            callback_data="back:categories"
+            callback_data="u_back:categories"
         )
     ]
 
@@ -285,7 +285,7 @@ def book_type_keyboard(
         keyboard.add(
             InlineKeyboardButton(
                 "📭 Bu kategoriyada kitoblar yo'q",
-                callback_data="empty"
+                callback_data="u_empty"
             )
         )
         keyboard.add(
@@ -297,7 +297,7 @@ def book_type_keyboard(
         keyboard.add(
             InlineKeyboardButton(
                 f"{Emoji.BOOK_PDF} PDF kitoblar ({pdf_count})",
-                callback_data=safe_callback(f"books:pdf:{category_id}")
+                callback_data=safe_callback(f"u_type:pdf:{category_id}")
             )
         )
 
@@ -305,7 +305,7 @@ def book_type_keyboard(
         keyboard.add(
             InlineKeyboardButton(
                 f"{Emoji.BOOK_AUDIO} Audio kitoblar ({audio_count})",
-                callback_data=safe_callback(f"books:audio:{category_id}")
+                callback_data=safe_callback(f"u_type:audio:{category_id}")
             )
         )
 
@@ -342,7 +342,7 @@ def books_list_keyboard(
         keyboard.add(
             InlineKeyboardButton(
                 "📭 Kitoblar topilmadi",
-                callback_data="empty"
+                callback_data="u_empty"
             )
         )
         keyboard.add(
@@ -358,7 +358,7 @@ def books_list_keyboard(
         keyboard.add(
             InlineKeyboardButton(
                 f"{emoji} {display_title}",
-                callback_data=safe_callback(f"book:{book.id}")
+                callback_data=safe_callback(f"u_dl:{book.id}")
             )
         )
 
@@ -371,7 +371,7 @@ def books_list_keyboard(
             pagination_row.append(
                 InlineKeyboardButton(
                     f"{Emoji.PREV} {page - 1}",
-                    callback_data=safe_callback(f"page:{page - 1}:{category_id}:{file_type}")
+                    callback_data=safe_callback(f"u_pg:{page - 1}:{category_id or 0}:{file_type or 'all'}")
                 )
             )
 
@@ -379,7 +379,7 @@ def books_list_keyboard(
         pagination_row.append(
             InlineKeyboardButton(
                 f"· {page}/{total_pages} ·",
-                callback_data="current_page"
+                callback_data="u_page_info"
             )
         )
 
@@ -388,7 +388,7 @@ def books_list_keyboard(
             pagination_row.append(
                 InlineKeyboardButton(
                     f"{page + 1} {Emoji.NEXT}",
-                    callback_data=safe_callback(f"page:{page + 1}:{category_id}:{file_type}")
+                    callback_data=safe_callback(f"u_pg:{page + 1}:{category_id or 0}:{file_type or 'all'}")
                 )
             )
 
@@ -489,7 +489,7 @@ def search_type_keyboard(
         keyboard.add(
             InlineKeyboardButton(
                 "😔 Hech narsa topilmadi",
-                callback_data="empty"
+                callback_data="u_empty"
             )
         )
         return keyboard
@@ -498,7 +498,7 @@ def search_type_keyboard(
         keyboard.add(
             InlineKeyboardButton(
                 f"{Emoji.BOOK_PDF} PDF natijalar ({pdf_count})",
-                callback_data=safe_callback(f"stype:pdf:{search_id or 0}")
+                callback_data=safe_callback(f"u_stype:pdf:{search_id or 0}")
             )
         )
 
@@ -506,7 +506,7 @@ def search_type_keyboard(
         keyboard.add(
             InlineKeyboardButton(
                 f"{Emoji.BOOK_AUDIO} Audio natijalar ({audio_count})",
-                callback_data=safe_callback(f"stype:audio:{search_id or 0}")
+                callback_data=safe_callback(f"u_stype:audio:{search_id or 0}")
             )
         )
 
@@ -536,7 +536,7 @@ def search_results_keyboard(
         keyboard.add(
             InlineKeyboardButton(
                 "😔 Hech narsa topilmadi",
-                callback_data="empty"
+                callback_data="u_empty"
             )
         )
         return keyboard
@@ -550,7 +550,7 @@ def search_results_keyboard(
         keyboard.add(
             InlineKeyboardButton(
                 f"{emoji} {display_title}",
-                callback_data=safe_callback(f"dl:{book.id}")
+                callback_data=safe_callback(f"u_dl:{book.id}")
             )
         )
 
@@ -562,7 +562,7 @@ def search_results_keyboard(
             pagination_row.append(
                 InlineKeyboardButton(
                     f"{Emoji.PREV}",
-                    callback_data=safe_callback(f"sp:{page - 1}:{search_id}:{file_type}")
+                    callback_data=safe_callback(f"u_sp:{page - 1}:{search_id}:{file_type}")
                 )
             )
 
@@ -574,7 +574,7 @@ def search_results_keyboard(
             pagination_row.append(
                 InlineKeyboardButton(
                     f"{Emoji.NEXT}",
-                    callback_data=safe_callback(f"sp:{page + 1}:{search_id}:{file_type}")
+                    callback_data=safe_callback(f"u_sp:{page + 1}:{search_id}:{file_type}")
                 )
             )
 
@@ -585,7 +585,7 @@ def search_results_keyboard(
         keyboard.add(
             InlineKeyboardButton(
                 f"{Emoji.SEARCH} Tur tanlash",
-                callback_data=safe_callback(f"sback:{search_id}")
+                callback_data=safe_callback(f"u_sback:{search_id}")
             )
         )
 
@@ -603,7 +603,7 @@ def popular_keyboard(
         keyboard.add(
             InlineKeyboardButton(
                 "📭 Mashhur kitoblar yo'q",
-                callback_data="empty"
+                callback_data="u_empty"
             )
         )
         return keyboard
@@ -612,7 +612,7 @@ def popular_keyboard(
         keyboard.add(
             InlineKeyboardButton(
                 f"{Emoji.FIRE} Mashhur PDF ({pdf_count})",
-                callback_data="popular:pdf"
+                callback_data="u_popular:pdf"
             )
         )
 
@@ -620,7 +620,7 @@ def popular_keyboard(
         keyboard.add(
             InlineKeyboardButton(
                 f"{Emoji.FIRE} Mashhur Audio ({audio_count})",
-                callback_data="popular:audio"
+                callback_data="u_popular:audio"
             )
         )
 
@@ -636,10 +636,10 @@ def popular_books_keyboard(
 
     if not books:
         keyboard.add(
-            InlineKeyboardButton("📭 Kitoblar yo'q", callback_data="empty")
+            InlineKeyboardButton("📭 Kitoblar yo'q", callback_data="u_empty")
         )
         keyboard.add(
-            InlineKeyboardButton(f"{Emoji.BACK} Orqaga", callback_data="back:popular")
+            InlineKeyboardButton(f"{Emoji.BACK} Orqaga", callback_data="u_back:popular")
         )
         return keyboard
 
@@ -654,12 +654,12 @@ def popular_books_keyboard(
         keyboard.add(
             InlineKeyboardButton(
                 f"{medal} {display_title} ({downloads})",
-                callback_data=safe_callback(f"dl:{book.id}")
+                callback_data=safe_callback(f"u_dl:{book.id}")
             )
         )
 
     keyboard.add(
-        InlineKeyboardButton(f"{Emoji.BACK} Orqaga", callback_data="back:popular")
+        InlineKeyboardButton(f"{Emoji.BACK} Orqaga", callback_data="u_back:popular")
     )
 
     return keyboard
@@ -674,7 +674,7 @@ def recent_books_keyboard(
 
     if not books:
         keyboard.add(
-            InlineKeyboardButton("📭 Yangi kitoblar yo'q", callback_data="empty")
+            InlineKeyboardButton("📭 Yangi kitoblar yo'q", callback_data="u_empty")
         )
         return keyboard
 
@@ -685,12 +685,12 @@ def recent_books_keyboard(
         keyboard.add(
             InlineKeyboardButton(
                 f"{Emoji.NEW} {emoji} {display_title}",
-                callback_data=safe_callback(f"dl:{book.id}")
+                callback_data=safe_callback(f"u_dl:{book.id}")
             )
         )
 
     keyboard.add(
-        InlineKeyboardButton(f"{Emoji.HOME} Bosh menyu", callback_data="back:main")
+        InlineKeyboardButton(f"{Emoji.HOME} Bosh menyu", callback_data="u_back:main")
     )
 
     return keyboard
@@ -715,7 +715,7 @@ def close_keyboard() -> InlineKeyboardMarkup:
     """Yopish tugmasi"""
     keyboard = InlineKeyboardMarkup()
     keyboard.add(
-        InlineKeyboardButton("✖️ Yopish", callback_data="close")
+        InlineKeyboardButton("✖️ Yopish", callback_data="u_close")
     )
     return keyboard
 
