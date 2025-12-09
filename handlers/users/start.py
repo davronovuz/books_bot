@@ -10,7 +10,7 @@ Xususiyatlar:
 - Error handling
 - Rate limiting ready
 - Type hints
-- Clean code (DRY)
+- Clean code
 """
 
 from aiogram import types
